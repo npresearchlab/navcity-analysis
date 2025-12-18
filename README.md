@@ -143,7 +143,7 @@ This analysis code has been used in the following publications. Each paper repos
 
 ## Related Resources
 
-- **NavCity Toolkit**: [NavCity_Toolkit](https://github.com/npresearchlab/NavCity_Toolkit) — Task source code, executable files, and implementation details
+- **NavCity Toolkit**: [NavCity Task](https://github.com/npresearchlab/navcity) — NavCity task source code, executable files, and implementation details
 - **Lab Website**: [npresearchlab.com](https://npresearchlab.com)
 
 ---
