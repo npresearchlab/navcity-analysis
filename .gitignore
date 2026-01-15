@@ -213,3 +213,6 @@ __marimo__/
 ._*
 .Spotlight-V100
 .Trashes
+
+# Claude
+.claude
