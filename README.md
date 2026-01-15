@@ -174,6 +174,24 @@ python run_analysis.py \
     --base-folder /Volumes/YB_Drive/NavAging_Paper/data
 ```
 
+#### Save Outputs to a Different Directory
+
+Use `--output-dir` to save all results to a separate location (instead of the input data folders):
+
+```bash
+# Single data folder - outputs saved directly to output directory
+python run_analysis.py \
+    --data-folders /path/to/YA_Data \
+    --output-dir /path/to/results
+
+# Multiple data folders - creates subdirectories (YA_Data/, OA_Data/) in output directory
+python run_analysis.py \
+    --data-folders /path/to/YA_Data /path/to/OA_Data \
+    --output-dir /path/to/results
+```
+
+If `--output-dir` is not specified, results are saved to the input data folders (original behavior).
+
 #### Run Specific Steps
 
 ```bash
@@ -267,10 +285,10 @@ average_metrics(data_folder: str, participant_ids: list) -> pd.DataFrame
 plot_participant_movement(data: pd.DataFrame, output_path: str, title: str = None)
     """Plot movement trajectories for a single participant/block."""
 
-generate_participant_movement_plots(data_folder: str, participant_ids: list)
+generate_participant_movement_plots(data_folder: str, participant_ids: list, output_dir: str = None)
     """Generate movement plots for all participants and blocks."""
 
-extract_target_trajectories(data_folder: str, participant_ids: list)
+extract_target_trajectories(data_folder: str, participant_ids: list, output_dir: str = None)
     """Extract and save trajectory data organized by target."""
 
 plot_target_maps(data_folder: str, blocks: list = None)
@@ -280,13 +298,13 @@ plot_target_maps(data_folder: str, blocks: list = None)
 ### post_processing.py
 
 ```python
-organize_and_rename_files(data_folder: str, ya_subfolder: str, oa_subfolder: str)
+organize_and_rename_files(output_folder: str, ya_subfolder: str, oa_subfolder: str)
     """Move and rename output files with age group prefixes."""
 
 fix_erroneous_data(merged_path: str, averaged_path: str, participant: str, ...)
     """Fix erroneous data for a specific participant/block/target."""
 
-post_analysis_cleanup(data_folder: str)
+post_analysis_cleanup(output_folder: str)
     """Run all post-analysis cleanup operations."""
 ```
 

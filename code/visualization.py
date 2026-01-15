@@ -70,22 +70,31 @@ def plot_participant_movement(
 
 def generate_participant_movement_plots(
     data_folder: str,
-    participant_ids: list
+    participant_ids: list,
+    output_dir: str = None
 ) -> None:
     """
     Generate movement plots for all participants and blocks.
 
     Args:
-        data_folder: Base data folder path
+        data_folder: Base data folder path (input data location)
         participant_ids: List of participant IDs
+        output_dir: Output directory for plots (defaults to data_folder)
     """
+    if output_dir is None:
+        output_dir = data_folder
+
     for pid in participant_ids:
         for block_num in range(1, 4):
             try:
                 filepath = f"{data_folder}/{pid}/Saved_data_{pid}_t{block_num}.csv"
                 data = process_raw_data(filepath)
 
-                output_path = f"{data_folder}/{pid}/b{block_num}_movement.png"
+                # Create participant output directory if needed
+                participant_output_dir = os.path.join(output_dir, pid)
+                os.makedirs(participant_output_dir, exist_ok=True)
+
+                output_path = f"{participant_output_dir}/b{block_num}_movement.png"
                 title = f"{pid} - Block {block_num}"
 
                 plot_participant_movement(data, output_path, title)
@@ -97,7 +106,8 @@ def generate_participant_movement_plots(
 
 def extract_target_trajectories(
     data_folder: str,
-    participant_ids: list
+    participant_ids: list,
+    output_dir: str = None
 ) -> None:
     """
     Extract and save trajectory data organized by target.
@@ -107,10 +117,14 @@ def extract_target_trajectories(
     - all_{target}_results.csv: Combined across all blocks
 
     Args:
-        data_folder: Base data folder path
+        data_folder: Base data folder path (input data location)
         participant_ids: List of participant IDs
+        output_dir: Output directory for results (defaults to data_folder)
     """
-    target_data_dir = f"{data_folder}/Target_Data"
+    if output_dir is None:
+        output_dir = data_folder
+
+    target_data_dir = f"{output_dir}/Target_Data"
     os.makedirs(target_data_dir, exist_ok=True)
 
     # Initialize containers for each target/block combination

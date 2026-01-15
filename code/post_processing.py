@@ -13,7 +13,7 @@ import pandas as pd
 
 
 def organize_and_rename_files(
-    data_folder: str,
+    output_folder: str,
     ya_subfolder: str = "YA_Data",
     oa_subfolder: str = "OA_Data"
 ) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
@@ -21,18 +21,18 @@ def organize_and_rename_files(
     Organize analysis output files by moving and renaming them.
 
     Moves merged_results.csv and averaged_results.csv from YA_Data and OA_Data
-    folders to the parent data folder with appropriate prefixes.
+    subfolders to the parent output folder with appropriate prefixes.
 
     Args:
-        data_folder: Base data folder path
-        ya_subfolder: Name of young adults data folder
-        oa_subfolder: Name of older adults data folder
+        output_folder: Base output folder path (where results were saved)
+        ya_subfolder: Name of young adults output folder
+        oa_subfolder: Name of older adults output folder
 
     Returns:
         Tuple of (ya_merged_path, ya_averaged_path, oa_merged_path, oa_averaged_path)
     """
-    ya_folder = os.path.join(data_folder, ya_subfolder)
-    oa_folder = os.path.join(data_folder, oa_subfolder)
+    ya_folder = os.path.join(output_folder, ya_subfolder)
+    oa_folder = os.path.join(output_folder, oa_subfolder)
 
     results = {}
 
@@ -41,7 +41,7 @@ def organize_and_rename_files(
     # Process YA_Data folder
     for file_type, prefix in [('merged', 'ya'), ('averaged', 'ya')]:
         src = os.path.join(ya_folder, f"{file_type}_results.csv")
-        dest = os.path.join(data_folder, f"{prefix}_{file_type}_results.csv")
+        dest = os.path.join(output_folder, f"{prefix}_{file_type}_results.csv")
 
         if os.path.exists(src):
             shutil.move(src, dest)
@@ -54,7 +54,7 @@ def organize_and_rename_files(
     # Process OA_Data folder
     for file_type, prefix in [('merged', 'oa'), ('averaged', 'oa')]:
         src = os.path.join(oa_folder, f"{file_type}_results.csv")
-        dest = os.path.join(data_folder, f"{prefix}_{file_type}_results.csv")
+        dest = os.path.join(output_folder, f"{prefix}_{file_type}_results.csv")
 
         if os.path.exists(src):
             shutil.move(src, dest)
@@ -143,7 +143,7 @@ def fix_erroneous_data(
         print(f"No valid {column_to_fix} values found for {participant}")
 
 
-def post_analysis_cleanup(data_folder: str) -> None:
+def post_analysis_cleanup(output_folder: str) -> None:
     """
     Run post-analysis cleanup operations.
 
@@ -151,10 +151,10 @@ def post_analysis_cleanup(data_folder: str) -> None:
     2. Fixes known erroneous data (BNC39 Pawn Shop Orientation_Time)
 
     Args:
-        data_folder: Base data folder path
+        output_folder: Base output folder path (where results were saved)
     """
     # Step 1: Organize files
-    ya_merged, ya_avg, oa_merged, oa_avg = organize_and_rename_files(data_folder)
+    ya_merged, ya_avg, oa_merged, oa_avg = organize_and_rename_files(output_folder)
 
     # Step 2: Fix known errors
     # BNC39 has erroneous Orientation_Time for Pawn Shop in block 1
@@ -171,12 +171,12 @@ def post_analysis_cleanup(data_folder: str) -> None:
     print("Post-analysis cleanup completed!")
 
 
-def combine_age_group_results(data_folder: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def combine_age_group_results(output_folder: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Combine YA and OA results into single DataFrames with age group labels.
 
     Args:
-        data_folder: Base data folder path
+        output_folder: Base output folder path (where results were saved)
 
     Returns:
         Tuple of (combined_merged_df, combined_averaged_df)
@@ -185,8 +185,8 @@ def combine_age_group_results(data_folder: str) -> Tuple[pd.DataFrame, pd.DataFr
     averaged_dfs = []
 
     for prefix, age_group in [('ya', 'Young'), ('oa', 'Older')]:
-        merged_path = os.path.join(data_folder, f"{prefix}_merged_results.csv")
-        averaged_path = os.path.join(data_folder, f"{prefix}_averaged_results.csv")
+        merged_path = os.path.join(output_folder, f"{prefix}_merged_results.csv")
+        averaged_path = os.path.join(output_folder, f"{prefix}_averaged_results.csv")
 
         if os.path.exists(merged_path):
             df = pd.read_csv(merged_path)
