@@ -216,3 +216,7 @@ __marimo__/
 
 # Claude
 .claude
+
+# Custom Folders
+**/_archive
+_archive
