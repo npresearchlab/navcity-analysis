@@ -20,8 +20,9 @@ def organize_and_rename_files(
     """
     Organize analysis output files by moving and renaming them.
 
-    Moves merged_results.csv and averaged_results.csv from YA_Data and OA_Data
-    subfolders to the parent output folder with appropriate prefixes.
+    Moves by_target_results.csv, by_block_total_results.csv, and
+    by_block_mean_results.csv from YA_Data and OA_Data subfolders to the
+    parent output folder with appropriate prefixes.
 
     Args:
         output_folder: Base output folder path (where results were saved)
@@ -29,48 +30,39 @@ def organize_and_rename_files(
         oa_subfolder: Name of older adults output folder
 
     Returns:
-        Tuple of (ya_merged_path, ya_averaged_path, oa_merged_path, oa_averaged_path)
+        Tuple of (ya_target_path, ya_total_path, ya_mean_path,
+                  oa_target_path, oa_total_path, oa_mean_path)
     """
     ya_folder = os.path.join(output_folder, ya_subfolder)
     oa_folder = os.path.join(output_folder, oa_subfolder)
 
+    file_types = ['by_target_results', 'by_block_total_results', 'by_block_mean_results']
     results = {}
 
     print("Organizing and renaming analysis output files...")
 
-    # Process YA_Data folder
-    for file_type, prefix in [('merged', 'ya'), ('averaged', 'ya')]:
-        src = os.path.join(ya_folder, f"{file_type}_results.csv")
-        dest = os.path.join(output_folder, f"{prefix}_{file_type}_results.csv")
+    for age_prefix, folder in [('ya', ya_folder), ('oa', oa_folder)]:
+        for file_type in file_types:
+            src = os.path.join(folder, f"{file_type}.csv")
+            dest = os.path.join(output_folder, f"{age_prefix}_{file_type}.csv")
 
-        if os.path.exists(src):
-            shutil.move(src, dest)
-            print(f"Moved: {src} -> {dest}")
-            results[f'ya_{file_type}'] = dest
-        else:
-            print(f"Warning: {src} not found")
-            results[f'ya_{file_type}'] = None
-
-    # Process OA_Data folder
-    for file_type, prefix in [('merged', 'oa'), ('averaged', 'oa')]:
-        src = os.path.join(oa_folder, f"{file_type}_results.csv")
-        dest = os.path.join(output_folder, f"{prefix}_{file_type}_results.csv")
-
-        if os.path.exists(src):
-            shutil.move(src, dest)
-            print(f"Moved: {src} -> {dest}")
-            results[f'oa_{file_type}'] = dest
-        else:
-            print(f"Warning: {src} not found")
-            results[f'oa_{file_type}'] = None
+            if os.path.exists(src):
+                shutil.move(src, dest)
+                print(f"Moved: {src} -> {dest}")
+                results[f'{age_prefix}_{file_type}'] = dest
+            else:
+                print(f"Warning: {src} not found")
+                results[f'{age_prefix}_{file_type}'] = None
 
     print("File organization completed!")
 
     return (
-        results.get('ya_merged'),
-        results.get('ya_averaged'),
-        results.get('oa_merged'),
-        results.get('oa_averaged')
+        results.get('ya_by_target_results'),
+        results.get('ya_by_block_total_results'),
+        results.get('ya_by_block_mean_results'),
+        results.get('oa_by_target_results'),
+        results.get('oa_by_block_total_results'),
+        results.get('oa_by_block_mean_results'),
     )
 
 
@@ -154,14 +146,15 @@ def post_analysis_cleanup(output_folder: str) -> None:
         output_folder: Base output folder path (where results were saved)
     """
     # Step 1: Organize files
-    ya_merged, ya_avg, oa_merged, oa_avg = organize_and_rename_files(output_folder)
+    (ya_target, ya_total, ya_mean,
+     oa_target, oa_total, oa_mean) = organize_and_rename_files(output_folder)
 
     # Step 2: Fix known errors
     # BNC39 has erroneous Orientation_Time for Pawn Shop in block 1
-    if oa_merged and oa_avg and os.path.exists(oa_merged) and os.path.exists(oa_avg):
+    if oa_target and oa_mean and os.path.exists(oa_target) and os.path.exists(oa_mean):
         fix_erroneous_data(
-            merged_csv_path=oa_merged,
-            averaged_csv_path=oa_avg,
+            merged_csv_path=oa_target,
+            averaged_csv_path=oa_mean,
             participant='BNC39',
             block_num=1,
             target_name='Pawn Shop',
@@ -171,7 +164,7 @@ def post_analysis_cleanup(output_folder: str) -> None:
     print("Post-analysis cleanup completed!")
 
 
-def combine_age_group_results(output_folder: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def combine_age_group_results(output_folder: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Combine YA and OA results into single DataFrames with age group labels.
 
@@ -179,26 +172,34 @@ def combine_age_group_results(output_folder: str) -> Tuple[pd.DataFrame, pd.Data
         output_folder: Base output folder path (where results were saved)
 
     Returns:
-        Tuple of (combined_merged_df, combined_averaged_df)
+        Tuple of (combined_target_df, combined_total_df, combined_mean_df)
     """
-    merged_dfs = []
-    averaged_dfs = []
+    target_dfs = []
+    total_dfs = []
+    mean_dfs = []
 
     for prefix, age_group in [('ya', 'Young'), ('oa', 'Older')]:
-        merged_path = os.path.join(output_folder, f"{prefix}_merged_results.csv")
-        averaged_path = os.path.join(output_folder, f"{prefix}_averaged_results.csv")
+        target_path = os.path.join(output_folder, f"{prefix}_by_target_results.csv")
+        total_path = os.path.join(output_folder, f"{prefix}_by_block_total_results.csv")
+        mean_path = os.path.join(output_folder, f"{prefix}_by_block_mean_results.csv")
 
-        if os.path.exists(merged_path):
-            df = pd.read_csv(merged_path)
+        if os.path.exists(target_path):
+            df = pd.read_csv(target_path)
             df.insert(0, 'Age_Group', age_group)
-            merged_dfs.append(df)
+            target_dfs.append(df)
 
-        if os.path.exists(averaged_path):
-            df = pd.read_csv(averaged_path)
+        if os.path.exists(total_path):
+            df = pd.read_csv(total_path)
             df.insert(0, 'Age_Group', age_group)
-            averaged_dfs.append(df)
+            total_dfs.append(df)
 
-    combined_merged = pd.concat(merged_dfs, ignore_index=True) if merged_dfs else pd.DataFrame()
-    combined_averaged = pd.concat(averaged_dfs, ignore_index=True) if averaged_dfs else pd.DataFrame()
+        if os.path.exists(mean_path):
+            df = pd.read_csv(mean_path)
+            df.insert(0, 'Age_Group', age_group)
+            mean_dfs.append(df)
 
-    return combined_merged, combined_averaged
+    combined_target = pd.concat(target_dfs, ignore_index=True) if target_dfs else pd.DataFrame()
+    combined_total = pd.concat(total_dfs, ignore_index=True) if total_dfs else pd.DataFrame()
+    combined_mean = pd.concat(mean_dfs, ignore_index=True) if mean_dfs else pd.DataFrame()
+
+    return combined_target, combined_total, combined_mean

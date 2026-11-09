@@ -69,7 +69,7 @@ code/
 | `0_runall.ipynb` | `run_analysis.py` | `main()`, CLI argument parsing |
 | `1_calculate_outcomes.ipynb` | `metrics.py` | `process_raw_data()`, `calculate_all_metrics()` |
 | `2_merge_data.ipynb` | `metrics.py` | `merge_block_results()` |
-| `3_average_data.ipynb` | `metrics.py` | `average_metrics()` |
+| `3_average_data.ipynb` | `metrics.py` | `total_metrics()`, `mean_metrics()` |
 | `4_target_data.ipynb` | `visualization.py` | `extract_target_trajectories()` |
 | `5_graph_data.ipynb` | `visualization.py` | `plot_target_maps()`, `generate_participant_movement_plots()` |
 | `6_post_analyses.ipynb` | `post_processing.py` | `post_analysis_cleanup()`, `organize_and_rename_files()` |
@@ -213,8 +213,8 @@ python run_analysis.py --base-folder /path/to/data --steps post-process
 | Step | Description | Output |
 |------|-------------|--------|
 | `metrics` | Calculate navigation metrics per participant/block | `{participant}/b{1,2,3}_results.csv` |
-| `merge` | Combine all block results | `merged_results.csv` |
-| `average` | Average metrics across targets | `averaged_results.csv` |
+| `merge` | Combine all block results by target | `by_target_results.csv` |
+| `average` | Aggregate metrics across targets per block | `by_block_total_results.csv`, `by_block_mean_results.csv` |
 | `trajectories` | Extract per-target coordinate data | `Target_Data/*.csv` |
 | `plots` | Generate movement visualizations | `*.png` files |
 | `post-process` | Organize files, fix known errors | Renamed/moved files |
@@ -242,12 +242,11 @@ plot_participant_movement(data, '/path/to/output.png', title='BNC01 Block 1')
 
 The efficient implementation produces **identical output files**:
 
-- Same file names (`b1_results.csv`, `merged_results.csv`, etc.)
-- Same column names and order
-- Same calculated values
+- Per-participant block files: `b1_results.csv`, `b2_results.csv`, `b3_results.csv`
+- Per-target results: `by_target_results.csv` (one row per participant/block/target)
+- Per-block totals: `by_block_total_results.csv` (sums across targets)
+- Per-block means: `by_block_mean_results.csv` (means across targets)
 - Same directory structure
-
-You can safely replace the original pipeline with this implementation.
 
 ### Performance
 
@@ -273,10 +272,13 @@ calculate_all_metrics(data: pd.DataFrame) -> pd.DataFrame
     """Calculate all navigation metrics for each target."""
 
 merge_block_results(data_folder: str, participant_ids: list) -> pd.DataFrame
-    """Merge all block results into a single DataFrame."""
+    """Merge all block results into a single DataFrame (by_target_results.csv)."""
 
-average_metrics(data_folder: str, participant_ids: list) -> pd.DataFrame
-    """Calculate average metrics across targets for each participant/block."""
+total_metrics(data_folder: str, participant_ids: list) -> pd.DataFrame
+    """Calculate summed metrics across targets for each participant/block."""
+
+mean_metrics(data_folder: str, participant_ids: list) -> pd.DataFrame
+    """Calculate mean metrics across targets for each participant/block."""
 ```
 
 ### visualization.py
@@ -301,8 +303,11 @@ plot_target_maps(data_folder: str, blocks: list = None)
 organize_and_rename_files(output_folder: str, ya_subfolder: str, oa_subfolder: str)
     """Move and rename output files with age group prefixes."""
 
-fix_erroneous_data(merged_path: str, averaged_path: str, participant: str, ...)
+fix_erroneous_data(merged_csv_path: str, averaged_csv_path: str, participant: str, ...)
     """Fix erroneous data for a specific participant/block/target."""
+
+combine_age_group_results(output_folder: str) -> Tuple[DataFrame, DataFrame, DataFrame]
+    """Combine YA and OA results into single DataFrames with age group labels."""
 
 post_analysis_cleanup(output_folder: str)
     """Run all post-analysis cleanup operations."""
@@ -311,6 +316,8 @@ post_analysis_cleanup(output_folder: str)
 ---
 
 ## Metrics Calculated
+
+### Per-Target Metrics (in `by_target_results.csv` and per-participant block files)
 
 | Metric | Description |
 |--------|-------------|
@@ -322,6 +329,35 @@ post_analysis_cleanup(output_folder: str)
 | `Mean_Dwell` | Average time spent at each unique position |
 | `Teleportations` | Count of unique positions visited |
 | `Mean_Teleport_Distance` | Average distance between consecutive unique positions |
+
+### By-Block Total Metrics (in `by_block_total_results.csv`)
+
+Sums across all targets within each block:
+
+| Column | Source |
+|--------|--------|
+| `Total_CompletionTime` | Sum of `Total_Time` |
+| `Total_OrientationTime` | Sum of `Orientation_Time` |
+| `Total_NavigationTime` | Sum of `Navigation_Time` |
+| `Total_Distance` | Sum of `Distance` |
+| `Total_DwellTime` | Sum of `Mean_Dwell` |
+| `Total_TeleportationCount` | Sum of `Teleportations` |
+| `Total_Teleport_Distance` | Sum of `Mean_Teleport_Distance` |
+
+### By-Block Mean Metrics (in `by_block_mean_results.csv`)
+
+Means across all targets within each block:
+
+| Column | Source |
+|--------|--------|
+| `Mean_CompletionTime` | Mean of `Total_Time` |
+| `Mean_OrientationTime` | Mean of `Orientation_Time` |
+| `Mean_NavigationTime` | Mean of `Navigation_Time` |
+| `Mean_Distance` | Mean of `Distance` |
+| `Mean_Speed` | Mean of `Speed` |
+| `Mean_DwellTime` | Mean of `Mean_Dwell` |
+| `Mean_TeleportationCount` | Mean of `Teleportations` |
+| `Mean_Teleport_Distance` | Mean of `Mean_Teleport_Distance` |
 
 ---
 
@@ -346,6 +382,6 @@ Same as parent repository: [MIT License](../LICENSE)
 
 ---
 
-**Last Updated**: January 2026
+**Last Updated**: March 2026
 **Original Author**: Yasmine Bassil
 **Refactored By**: Claude (Anthropic)

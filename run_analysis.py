@@ -32,7 +32,8 @@ from metrics import (
     process_raw_data,
     calculate_all_metrics,
     merge_block_results,
-    average_metrics,
+    total_metrics,
+    mean_metrics,
 )
 from visualization import (
     generate_participant_movement_plots,
@@ -110,7 +111,7 @@ def run_merge(data_folder: str, participant_ids: List[str], output_dir: Optional
     """
     Step 2: Merge all block results into a single file.
 
-    Creates merged_results.csv with all participants and blocks.
+    Creates by_target_results.csv with all participants and blocks.
 
     Args:
         data_folder: Path to the input data folder
@@ -128,7 +129,7 @@ def run_merge(data_folder: str, participant_ids: List[str], output_dir: Optional
     merged_df = merge_block_results(output_dir, participant_ids)
 
     if not merged_df.empty:
-        output_path = f"{output_dir}/merged_results.csv"
+        output_path = f"{output_dir}/by_target_results.csv"
         merged_df.to_csv(output_path, index=False)
         print(f"Created: {output_path}")
         print(f"Total rows: {len(merged_df)}")
@@ -138,9 +139,9 @@ def run_merge(data_folder: str, participant_ids: List[str], output_dir: Optional
 
 def run_average(data_folder: str, participant_ids: List[str], output_dir: Optional[str] = None) -> None:
     """
-    Step 3: Calculate averaged metrics per participant per block.
+    Step 3: Calculate aggregated metrics per participant per block.
 
-    Creates averaged_results.csv with one row per participant per block.
+    Creates by_block_total_results.csv (sums) and by_block_mean_results.csv (means).
 
     Args:
         data_folder: Path to the input data folder
@@ -151,17 +152,25 @@ def run_average(data_folder: str, participant_ids: List[str], output_dir: Option
         output_dir = data_folder
 
     print(f"\n{'='*60}")
-    print("Step 3: Averaging metrics across targets...")
+    print("Step 3: Aggregating metrics across targets...")
     print(f"{'='*60}")
 
     # Use output_dir for reading block results if they were saved there
-    averaged_df = average_metrics(output_dir, participant_ids)
-
-    if not averaged_df.empty:
-        output_path = f"{output_dir}/averaged_results.csv"
-        averaged_df.to_csv(output_path, index=False)
+    total_df = total_metrics(output_dir, participant_ids)
+    if not total_df.empty:
+        output_path = f"{output_dir}/by_block_total_results.csv"
+        total_df.to_csv(output_path, index=False)
         print(f"Created: {output_path}")
-        print(f"Total rows: {len(averaged_df)}")
+        print(f"Total rows: {len(total_df)}")
+    else:
+        print("Warning: No data to total")
+
+    mean_df = mean_metrics(output_dir, participant_ids)
+    if not mean_df.empty:
+        output_path = f"{output_dir}/by_block_mean_results.csv"
+        mean_df.to_csv(output_path, index=False)
+        print(f"Created: {output_path}")
+        print(f"Total rows: {len(mean_df)}")
     else:
         print("Warning: No data to average")
 

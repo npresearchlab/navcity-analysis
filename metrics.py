@@ -213,40 +213,78 @@ def merge_block_results(data_folder: str, participant_ids: list) -> pd.DataFrame
     return pd.DataFrame()
 
 
-def average_metrics(data_folder: str, participant_ids: list) -> pd.DataFrame:
+def _load_block_results(data_folder: str, participant_ids: list) -> list:
+    """Load block result CSVs for all participants."""
+    results = []
+    for pid in participant_ids:
+        for block_num in range(1, 4):
+            try:
+                filepath = f"{data_folder}/{pid}/b{block_num}_results.csv"
+                df = pd.read_csv(filepath)
+                results.append((pid, block_num, df))
+            except FileNotFoundError:
+                print(f"Warning: {filepath} not found")
+    return results
+
+
+# Mapping from per-target metric columns to output column names
+_TOTAL_COL_MAP = {
+    'Total_Time': 'Total_CompletionTime',
+    'Orientation_Time': 'Total_OrientationTime',
+    'Navigation_Time': 'Total_NavigationTime',
+    'Distance': 'Total_Distance',
+    'Mean_Dwell': 'Total_DwellTime',
+    'Teleportations': 'Total_TeleportationCount',
+    'Mean_Teleport_Distance': 'Total_Teleport_Distance',
+}
+
+_MEAN_COL_MAP = {
+    'Total_Time': 'Mean_CompletionTime',
+    'Orientation_Time': 'Mean_OrientationTime',
+    'Navigation_Time': 'Mean_NavigationTime',
+    'Distance': 'Mean_Distance',
+    'Speed': 'Mean_Speed',
+    'Mean_Dwell': 'Mean_DwellTime',
+    'Teleportations': 'Mean_TeleportationCount',
+    'Mean_Teleport_Distance': 'Mean_Teleport_Distance',
+}
+
+
+def total_metrics(data_folder: str, participant_ids: list) -> pd.DataFrame:
     """
-    Calculate average metrics across targets for each participant/block.
+    Calculate summed metrics across targets for each participant/block.
 
     Args:
         data_folder: Base data folder path
         participant_ids: List of participant IDs
 
     Returns:
-        DataFrame with averaged metrics per participant per block
+        DataFrame with total (summed) metrics per participant per block
     """
-    results = []
+    rows = []
+    for pid, block_num, df in _load_block_results(data_folder, participant_ids):
+        row = {'Participant': pid, 'Block_Num': block_num}
+        for src_col, dst_col in _TOTAL_COL_MAP.items():
+            row[dst_col] = df[src_col].sum()
+        rows.append(row)
+    return pd.DataFrame(rows)
 
-    metric_cols = [
-        'Total_Time', 'Orientation_Time', 'Navigation_Time',
-        'Distance', 'Speed', 'Mean_Dwell',
-        'Teleportations', 'Mean_Teleport_Distance'
-    ]
 
-    for pid in participant_ids:
-        for block_num in range(1, 4):
-            try:
-                filepath = f"{data_folder}/{pid}/b{block_num}_results.csv"
-                df = pd.read_csv(filepath)
+def mean_metrics(data_folder: str, participant_ids: list) -> pd.DataFrame:
+    """
+    Calculate mean metrics across targets for each participant/block.
 
-                row = {
-                    'Participant': pid,
-                    'Block_Num': block_num
-                }
-                for col in metric_cols:
-                    row[col] = df[col].mean()
+    Args:
+        data_folder: Base data folder path
+        participant_ids: List of participant IDs
 
-                results.append(row)
-            except FileNotFoundError:
-                print(f"Warning: {filepath} not found")
-
-    return pd.DataFrame(results)
+    Returns:
+        DataFrame with mean metrics per participant per block
+    """
+    rows = []
+    for pid, block_num, df in _load_block_results(data_folder, participant_ids):
+        row = {'Participant': pid, 'Block_Num': block_num}
+        for src_col, dst_col in _MEAN_COL_MAP.items():
+            row[dst_col] = df[src_col].mean()
+        rows.append(row)
+    return pd.DataFrame(rows)
