@@ -1,0 +1,705 @@
+---
+title: "P-Value and Estimate Extraction"
+author: "Yasmine Bassil"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+source(file.path(Sys.getenv("NAVCITY_CODE"), "setup.R"), local = TRUE)   # data paths, sample filter, fixes
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Overview
+
+This R Markdown document extracts specific p-values and estimates from linear mixed model results for sensitivity analysis. The process involves:
+
+1. Reading the sensitivity analysis specifications from `pval_template_main.xlsx`
+2. Dynamically loading CSV files based on the database names specified in the template
+3. Matching and extracting the corresponding p-values and estimates
+4. Saving the results with the extracted values
+
+# Load Required Libraries
+
+```{r load-libraries}
+library(readxl)
+library(dplyr)
+library(readr)
+library(knitr)
+library(DT)
+```
+
+# Read Data Files
+
+## Sensitivity Analysis Specifications
+
+```{r read-sensitivity}
+# Read the sensitivity analysis file
+model_data <- read_excel(file.path(Sys.getenv("NAVCITY_CODE"), "3_stats", "cohorts_lmm", "pval_template_cohorts.xlsx"))
+
+# Display the first few rows
+kable(head(model_data), 
+      caption = "First 6 rows of Template Data Specifications")
+
+# Show summary of databases and outcomes
+cat("Unique databases:", paste(unique(model_data$Database), collapse = ", "), "\n")
+cat("Unique outcomes:", paste(unique(model_data$Outcome), collapse = ", "), "\n")
+cat("Total rows to process:", nrow(model_data), "\n")
+```
+
+## Load All "all_" CSV Files
+
+```{r read-data-dynamic}
+# Base path for the CSV files
+base_path <- paste0(getwd(), "/")
+
+# Find all CSV files that start with "all_"
+csv_files <- list.files(base_path, pattern = "^all_.*\\.csv$", full.names = FALSE)
+cat("Found CSV files starting with 'all_':", paste(csv_files, collapse = ", "), "\n")
+
+# Initialize a list to store all dataframes
+data_sources <- list()
+
+# Function to safely read CSV files
+safe_read_csv <- function(file_path, file_name) {
+  tryCatch({
+    full_path <- file.path(file_path, file_name)
+    if (file.exists(full_path)) {
+      data <- read_csv(full_path, show_col_types = FALSE)
+      cat("✓ Successfully loaded:", file_name, "(", nrow(data), "rows ×", ncol(data), "columns)\n")
+      return(data)
+    } else {
+      cat("✗ File not found:", full_path, "\n")
+      return(NULL)
+    }
+  }, error = function(e) {
+    cat("✗ Error loading", file_name, ":", e$message, "\n")
+    return(NULL)
+  })
+}
+
+# Load all "all_" CSV files
+for (csv_file in csv_files) {
+  # Remove .csv extension to use as database name
+  db_name <- gsub("\\.csv$", "", csv_file)
+  data_sources[[db_name]] <- safe_read_csv(base_path, csv_file)
+}
+
+# Remove any NULL entries (files that couldn't be loaded)
+data_sources <- data_sources[!sapply(data_sources, is.null)]
+
+# Display summary of loaded data
+cat("\n=== Summary of Loaded Data Sources ===\n")
+for (name in names(data_sources)) {
+  df <- data_sources[[name]]
+  cat(sprintf("%-30s: %d rows × %d columns\n", name, nrow(df), ncol(df)))
+}
+
+# Show what databases are available vs what's needed in template
+template_databases <- unique(model_data$Database)
+cat("\n=== Database Matching ===\n")
+cat("Databases needed by template:", paste(template_databases, collapse = ", "), "\n")
+cat("Databases loaded:", paste(names(data_sources), collapse = ", "), "\n")
+
+missing_dbs <- setdiff(template_databases, names(data_sources))
+if (length(missing_dbs) > 0) {
+  cat("⚠️  Missing databases:", paste(missing_dbs, collapse = ", "), "\n")
+} else {
+  cat("✓ All required databases loaded successfully\n")
+}
+```
+
+### Preview of Data Files
+
+```{r preview-data}
+# Preview each loaded dataset
+for (db_name in names(data_sources)) {
+  if (!is.null(data_sources[[db_name]])) {
+    cat("\n### Preview of", db_name, "\n")
+    df_preview <- head(data_sources[[db_name]])
+    print(kable(df_preview, 
+                caption = paste("First 6 rows of", db_name),
+                digits = 6))
+    
+    # Show column names and basic info
+    cat("Columns:", paste(names(data_sources[[db_name]]), collapse = ", "), "\n")
+    cat("Total rows:", nrow(data_sources[[db_name]]), "\n")
+    
+    # Show unique outcomes in this database
+    if ("Outcome" %in% names(data_sources[[db_name]])) {
+      unique_outcomes <- unique(data_sources[[db_name]]$Outcome)
+      cat("Unique outcomes (", length(unique_outcomes), "):", paste(unique_outcomes, collapse = ", "), "\n")
+    }
+    
+    cat("\n")
+  }
+}
+```
+
+# Precise P-value and Estimate Extraction Function
+
+```{r extraction-function}
+# Simplified function for precise extraction
+extract_statistics <- function(database, outcome, contrast_value) {
+  
+  # Check if the database exists in our loaded data sources
+  if (!database %in% names(data_sources)) {
+    cat("⚠️  Database '", database, "' not found. Available:", paste(names(data_sources), collapse = ", "), "\n")
+    return(list(p_value = NA, estimate = NA, status = "Database not found"))
+  }
+  
+  # Get the dataset
+  data_source <- data_sources[[database]]
+  
+  if (is.null(data_source) || nrow(data_source) == 0) {
+    cat("⚠️  Database '", database, "' is empty\n")
+    return(list(p_value = NA, estimate = NA, status = "Empty database"))
+  }
+  
+  # Check required columns
+  if (!"Outcome" %in% names(data_source)) {
+    cat("⚠️  Database '", database, "' missing 'Outcome' column\n")
+    return(list(p_value = NA, estimate = NA, status = "Missing Outcome column"))
+  }
+  
+  if (!"p.value" %in% names(data_source)) {
+    cat("⚠️  Database '", database, "' missing 'p.value' column\n")
+    return(list(p_value = NA, estimate = NA, status = "Missing p.value column"))
+  }
+  
+  if (!"estimate" %in% names(data_source)) {
+    cat("⚠️  Database '", database, "' missing 'estimate' column\n")
+    return(list(p_value = NA, estimate = NA, status = "Missing estimate column"))
+  }
+  
+  # Check if required columns exist - ONLY look for "contrast" column
+  if (!"contrast" %in% names(data_source)) {
+    cat("⚠️  Database '", database, "' missing 'contrast' column\n")
+    cat("   Available columns:", paste(names(data_source), collapse = ", "), "\n")
+    return(list(p_value = NA, estimate = NA, status = "Missing contrast column"))
+  }
+  
+  # Use ONLY the "contrast" column
+  # No need to set contrast_col variable anymore since we're using "contrast" directly
+  
+  # Find exact matches using BOTH Outcome AND contrast together
+  # Let's be absolutely explicit about the filtering
+  cat("   DEBUGGING: Looking for exact match:\n")
+  cat("   Template Outcome: '", outcome, "'\n")
+  cat("   Template Contrast: '", contrast_value, "'\n")
+  
+  # Step 1: Filter by outcome only
+  outcome_matches <- data_source %>%
+    filter(Outcome == outcome)
+  
+  cat("   Step 1 - Outcome filter: Found", nrow(outcome_matches), "rows with Outcome='", outcome, "'\n")
+  
+  # Step 2: From those, filter by contrast (using ONLY "contrast" column)
+  final_matches <- outcome_matches %>%
+    filter(contrast == contrast_value)
+  
+  cat("   Step 2 - Contrast filter: Found", nrow(final_matches), "rows with BOTH conditions\n")
+  
+  # Let's also verify this is the same as doing it in one step
+  single_step_matches <- data_source %>%
+    filter(Outcome == outcome, contrast == contrast_value)
+  
+  cat("   Verification - Single step filter:", nrow(single_step_matches), "rows\n")
+  
+  # Make sure both methods give the same result
+  if (nrow(final_matches) != nrow(single_step_matches)) {
+    cat("   ⚠️  WARNING: Two-step and single-step filtering give different results!\n")
+  }
+  
+  # Use the final matches
+  matches <- final_matches
+  
+  # If we found multiple matches, show them in detail
+  if (nrow(matches) > 1) {
+    cat("   ⚠️  FOUND", nrow(matches), "DUPLICATE ROWS with same Outcome AND Contrast:\n")
+    for (i in 1:min(5, nrow(matches))) {
+      row_data <- matches[i, ]
+      cat("     Row", i, ": Outcome='", row_data$Outcome, "', Contrast='", row_data$contrast, 
+          "', p=", row_data$p.value, ", est=", row_data$estimate, "\n")
+    }
+    cat("   This indicates duplicate data in your CSV file!\n")
+    
+    # Return the first match but flag it
+    return(list(
+      p_value = matches$p.value[1], 
+      estimate = matches$estimate[1],
+      status = "Multiple matches - duplicates in data"
+    ))
+  }
+  
+  # Report results for no matches
+  if (nrow(matches) == 0) {
+    cat("❌ No match found\n")
+    
+    # Show what contrasts ARE available for this outcome
+    if (nrow(outcome_matches) > 0) {
+      available_contrasts <- unique(outcome_matches$contrast)
+      cat("   Available contrasts for Outcome='", outcome, "' (", length(available_contrasts), " total):\n")
+      for (i in 1:min(10, length(available_contrasts))) {
+        ac <- available_contrasts[i]
+        matches_template <- (ac == contrast_value)
+        cat("     [", i, "] '", ac, "'", ifelse(matches_template, " *** MATCHES TEMPLATE ***", ""), "\n")
+      }
+      if (length(available_contrasts) > 10) {
+        cat("     ... and", length(available_contrasts) - 10, "more\n")
+      }
+    } else {
+      # Show what outcomes ARE available  
+      all_outcomes <- unique(data_source$Outcome)
+      cat("   No rows for Outcome='", outcome, "'. Available outcomes:\n")
+      cat("     ", paste(head(all_outcomes, 10), collapse = ", "))
+      if (length(all_outcomes) > 10) cat(" ...")
+      cat("\n")
+    }
+    
+    return(list(p_value = NA, estimate = NA, status = "No match found"))
+  }
+  
+  # Single match found - success!
+  p_val <- matches$p.value[1]
+  estimate_val <- matches$estimate[1]
+  
+  # Convert p-value if it's a character (scientific notation)
+  if (is.character(p_val)) {
+    p_val <- as.numeric(p_val)
+  }
+  
+  cat("✓ Found EXACTLY ONE match: p=", p_val, ", estimate=", estimate_val, "\n")
+  
+  return(list(
+    p_value = p_val,
+    estimate = estimate_val,
+    status = "Success"
+  ))
+}
+```
+
+# Extract P-values and Estimates
+
+```{r extract-statistics}
+cat("=== Starting P-value Extraction ===\n")
+cat("Processing", nrow(model_data), "rows from template...\n\n")
+
+# Process each row individually for clear progress tracking
+results_list <- list()
+
+for (i in 1:nrow(model_data)) {
+  row <- model_data[i, ]
+  cat("Row", i, ":", row$Figure_Num, "| DB:", row$Database, "| Outcome:", row$Outcome, "| Contrast:", row$contrast, "\n")
+  
+  # Extract statistics for this row
+  stats <- extract_statistics(row$Database, row$Outcome, row$contrast)
+  
+  # Store results
+  results_list[[i]] <- data.frame(
+    Figure_Num = row$Figure_Num,
+    Database = row$Database,
+    Outcome = row$Outcome,
+    contrast = row$contrast,
+    p_value = stats$p_value,
+    estimate = stats$estimate,
+    status = stats$status
+  )
+  
+  cat("\n")
+}
+
+# Combine all results
+statistical_extraction_results <- do.call(rbind, results_list)
+
+# Summary of extraction results
+cat("=== Extraction Summary ===\n")
+status_summary <- table(statistical_extraction_results$status)
+print(status_summary)
+
+# Check for duplicate p-values
+successful_results <- statistical_extraction_results %>%
+  filter(status == "Success" & !is.na(p_value))
+
+if (nrow(successful_results) > 0) {
+  duplicate_pvalues <- successful_results %>%
+    group_by(p_value) %>%
+    filter(n() > 1) %>%
+    arrange(p_value)
+  
+  if (nrow(duplicate_pvalues) > 0) {
+    cat("\n⚠️  WARNING: Found", nrow(duplicate_pvalues), "rows with duplicate p-values:\n")
+    print(duplicate_pvalues %>% select(Figure_Num, Database, Outcome, contrast, p_value, estimate))
+  } else {
+    cat("\n✓ No duplicate p-values found among successful extractions!\n")
+  }
+}
+```
+
+# Results
+
+## Complete Results Table
+
+```{r display-results}
+# Create an interactive table with the results
+datatable(statistical_extraction_results %>% select(-status), 
+          caption = "Sensitivity Analysis Results with Extracted P-values and Estimates",
+          options = list(pageLength = 15, scrollX = TRUE),
+          filter = 'top') %>%
+  formatSignif(columns = c('p_value', 'estimate'), digits = 4)
+```
+
+## Summary Statistics
+
+```{r summary-stats}
+# Check for any missing values and failed extractions
+failed_extractions <- statistical_extraction_results %>%
+  filter(status != "Success")
+
+successful_extractions <- statistical_extraction_results %>%
+  filter(status == "Success")
+
+missing_pvalues <- statistical_extraction_results %>%
+  filter(is.na(p_value))
+
+missing_estimates <- statistical_extraction_results %>%
+  filter(is.na(estimate))
+
+# Create summary table
+summary_stats <- data.frame(
+  Metric = c("Total rows processed", 
+             "Successful extractions",
+             "Failed extractions",
+             "P-values successfully extracted", 
+             "Estimates successfully extracted",
+             "Missing p-values",
+             "Missing estimates"),
+  Count = c(nrow(statistical_extraction_results),
+            nrow(successful_extractions),
+            nrow(failed_extractions),
+            sum(!is.na(statistical_extraction_results$p_value)),
+            sum(!is.na(statistical_extraction_results$estimate)),
+            sum(is.na(statistical_extraction_results$p_value)),
+            sum(is.na(statistical_extraction_results$estimate)))
+)
+
+kable(summary_stats, caption = "Extraction Summary")
+
+# Calculate success rates
+success_rate <- round(100 * nrow(successful_extractions) / nrow(statistical_extraction_results), 1)
+success_rate_pvalue <- round(100 * sum(!is.na(statistical_extraction_results$p_value)) / nrow(statistical_extraction_results), 1)
+success_rate_estimate <- round(100 * sum(!is.na(statistical_extraction_results$estimate)) / nrow(statistical_extraction_results), 1)
+
+cat("\nExtraction Success Rates:\n")
+cat("Overall success:", success_rate, "%\n")
+cat("P-values:", success_rate_pvalue, "%\n")
+cat("Estimates:", success_rate_estimate, "%\n")
+```
+
+## Missing Values and Failed Extractions
+
+```{r missing-values}
+if (nrow(failed_extractions) > 0) {
+  cat("❌ Failed extractions (", nrow(failed_extractions), "rows):\n")
+  
+  # Group by failure reason
+  failure_summary <- failed_extractions %>%
+    group_by(status) %>%
+    summarise(count = n(), .groups = 'drop') %>%
+    arrange(desc(count))
+  
+  kable(failure_summary, caption = "Failure Reasons Summary")
+  
+  cat("\nDetailed failed extractions:\n")
+  failed_display <- failed_extractions %>% 
+    select(Figure_Num, Database, Outcome, contrast, status)
+  kable(failed_display, caption = "Failed Extractions Details")
+  
+} else {
+  cat("✓ All extractions completed successfully!\n")
+}
+
+if (nrow(missing_pvalues) > 0) {
+  cat("\n⚠️  Rows with missing p-values (", nrow(missing_pvalues), "):\n")
+  missing_display <- missing_pvalues %>% 
+    select(Figure_Num, Database, Outcome, contrast, status)
+  kable(missing_display, caption = "Rows with Missing P-values")
+} else {
+  cat("\n✓ All p-values successfully extracted!\n")
+}
+
+if (nrow(missing_estimates) > 0) {
+  cat("\n⚠️  Rows with missing estimates (", nrow(missing_estimates), "):\n")
+  missing_est_display <- missing_estimates %>% 
+    select(Figure_Num, Database, Outcome, contrast, status)
+  kable(missing_est_display, caption = "Rows with Missing Estimates")
+} else {
+  cat("\n✓ All estimates successfully extracted!\n")
+}
+```
+
+# Results by Database
+
+```{r results-by-database}
+# Summary of results by database
+database_summary <- statistical_extraction_results %>%
+  group_by(Database) %>%
+  summarise(
+    Total_rows = n(),
+    Successful_extractions = sum(status == "Success"),
+    Failed_extractions = sum(status != "Success"),
+    Successful_pvalue_extractions = sum(!is.na(p_value)),
+    Successful_estimate_extractions = sum(!is.na(estimate)),
+    Missing_pvalues = sum(is.na(p_value)),
+    Missing_estimates = sum(is.na(estimate)),
+    Significant_results = sum(p_value < 0.05, na.rm = TRUE),
+    Success_rate = round(100 * Successful_extractions / Total_rows, 1),
+    .groups = 'drop'
+  )
+
+kable(database_summary, caption = "Summary by Database")
+```
+
+# Results by Outcome
+
+```{r results-by-outcome}
+# Summary of results by outcome
+outcome_summary <- statistical_extraction_results %>%
+  group_by(Outcome) %>%
+  summarise(
+    Total_rows = n(),
+    Successful_pvalue_extractions = sum(!is.na(p_value)),
+    Successful_estimate_extractions = sum(!is.na(estimate)),
+    Missing_pvalues = sum(is.na(p_value)),
+    Missing_estimates = sum(is.na(estimate)),
+    Significant_results = sum(p_value < 0.05, na.rm = TRUE),
+    Mean_pvalue = mean(p_value, na.rm = TRUE),
+    Mean_estimate = mean(estimate, na.rm = TRUE),
+    Success_rate = round(100 * Successful_pvalue_extractions / Total_rows, 1),
+    .groups = 'drop'
+  )
+
+kable(outcome_summary, caption = "Summary by Outcome", digits = 4)
+```
+
+# Statistical Summary of Estimates
+
+```{r estimate-summary}
+# Create summary statistics for estimates
+estimate_stats <- statistical_extraction_results %>%
+  filter(!is.na(estimate)) %>%
+  summarise(
+    N = n(),
+    Mean = mean(estimate, na.rm = TRUE),
+    Median = median(estimate, na.rm = TRUE),
+    SD = sd(estimate, na.rm = TRUE),
+    Min = min(estimate, na.rm = TRUE),
+    Max = max(estimate, na.rm = TRUE),
+    Q25 = quantile(estimate, 0.25, na.rm = TRUE),
+    Q75 = quantile(estimate, 0.75, na.rm = TRUE)
+  )
+
+kable(estimate_stats, caption = "Summary Statistics for Estimates", digits = 4)
+```
+
+# Data Coverage Analysis
+
+```{r quality-checks}
+cat("=== Comprehensive Debugging Analysis ===\n\n")
+
+# 1. Check template vs loaded databases
+template_databases <- unique(model_data$Database)
+loaded_databases <- names(data_sources)
+
+cat("TEMPLATE DATABASES (", length(template_databases), "):\n")
+for (i in seq_along(template_databases)) {
+  db <- template_databases[i]
+  rows_requested <- sum(model_data$Database == db)
+  is_loaded <- db %in% loaded_databases
+  
+  cat("  [", i, "] '", db, "' - ", rows_requested, " rows requested - ", 
+      ifelse(is_loaded, "✓ LOADED", "❌ NOT LOADED"), "\n")
+}
+
+cat("\nLOADED DATABASES (", length(loaded_databases), "):\n")
+for (i in seq_along(loaded_databases)) {
+  db <- loaded_databases[i]
+  is_needed <- db %in% template_databases
+  row_count <- nrow(data_sources[[db]])
+  
+  cat("  [", i, "] '", db, "' - ", row_count, " rows - ", 
+      ifelse(is_needed, "✓ NEEDED", "⚠️  NOT NEEDED"), "\n")
+}
+
+# 2. Check column structure in each loaded database
+cat("\n=== DATABASE STRUCTURE ANALYSIS ===\n")
+for (db_name in names(data_sources)) {
+  cat("\nDatabase: '", db_name, "'\n")
+  df <- data_sources[[db_name]]
+  cat("  Rows:", nrow(df), "\n")
+  cat("  Columns:", paste(names(df), collapse = ", "), "\n")
+  
+  # Check for required columns - ONLY look for "contrast"
+  required_cols <- c("Outcome", "p.value", "estimate", "contrast")
+  
+  missing_required <- setdiff(required_cols, names(df))
+  
+  if (length(missing_required) > 0) {
+    cat("  ❌ Missing required columns:", paste(missing_required, collapse = ", "), "\n")
+  } else {
+    cat("  ✓ Has all required columns\n")
+  }
+  
+  # Show sample data
+  if (nrow(df) > 0 && "Outcome" %in% names(df)) {
+    unique_outcomes <- unique(df$Outcome)
+    cat("  Unique outcomes (", length(unique_outcomes), "):", paste(head(unique_outcomes, 5), collapse = ", "))
+    if (length(unique_outcomes) > 5) cat(" ...")
+    cat("\n")
+    
+    if ("contrast" %in% names(df)) {
+      sample_contrasts <- df %>% pull(contrast) %>% unique()
+      cat("  Sample contrasts (", length(sample_contrasts), "):", paste(head(sample_contrasts, 3), collapse = ", "))
+      if (length(sample_contrasts) > 3) cat(" ...")
+      cat("\n")
+    }
+  }
+}
+
+# 3. Check specific template requests vs available data
+cat("\n=== TEMPLATE REQUEST ANALYSIS ===\n")
+cat("Analyzing first 10 template requests:\n\n")
+
+for (i in 1:min(10, nrow(model_data))) {
+  row <- model_data[i, ]
+  cat("Template Row [", i, "]:\n")
+  cat("  Figure: ", row$Figure_Num, "\n")
+  cat("  Database: '", row$Database, "'\n")
+  cat("  Outcome: '", row$Outcome, "'\n") 
+  cat("  Contrast: '", row$contrast, "'\n")
+  
+  # Check if database exists
+  if (row$Database %in% names(data_sources)) {
+    df <- data_sources[[row$Database]]
+    cat("  ✓ Database exists (", nrow(df), " rows)\n")
+    
+    # Check outcome
+    if ("Outcome" %in% names(df)) {
+      outcome_exists <- row$Outcome %in% df$Outcome
+      cat("  Outcome exists: ", ifelse(outcome_exists, "✓ YES", "❌ NO"), "\n")
+      
+      if (!outcome_exists) {
+        available_outcomes <- unique(df$Outcome)
+        cat("    Available outcomes:", paste(head(available_outcomes, 3), collapse = ", "))
+        if (length(available_outcomes) > 3) cat(" ...")
+        cat("\n")
+      }
+    } else {
+      cat("  ❌ No 'Outcome' column in database\n")
+    }
+    
+    # Check contrast - ONLY look for "contrast" column
+    if ("contrast" %in% names(df)) {
+      contrast_exists <- row$contrast %in% df$contrast
+      cat("  Contrast exists: ", ifelse(contrast_exists, "✓ YES", "❌ NO"), "\n")
+      
+      if (!contrast_exists) {
+        # Show similar contrasts
+        all_contrasts <- df$contrast
+        similar_contrasts <- all_contrasts[grepl("YA.*OA|OA.*YA", all_contrasts, ignore.case = TRUE)]
+        if (length(similar_contrasts) > 0) {
+          cat("    Similar contrasts:", paste(head(similar_contrasts, 3), collapse = ", "))
+          if (length(similar_contrasts) > 3) cat(" ...")
+          cat("\n")
+        }
+      }
+      
+      # Check combination
+      if (outcome_exists && contrast_exists) {
+        combo_exists <- nrow(df %>% filter(Outcome == row$Outcome & contrast == row$contrast)) > 0
+        cat("  Combination exists: ", ifelse(combo_exists, "✓ YES", "❌ NO"), "\n")
+      }
+      
+    } else {
+      cat("  ❌ No 'contrast' column in database\n")
+    }
+    
+  } else {
+    cat("  ❌ Database does not exist\n")
+  }
+  cat("\n")
+}
+
+# 4. Summary of issues
+missing_db_count <- sum(!template_databases %in% loaded_databases)
+cat("=== ISSUE SUMMARY ===\n")
+cat("Missing databases: ", missing_db_count, "/", length(template_databases), "\n")
+
+if (missing_db_count > 0) {
+  missing_dbs <- setdiff(template_databases, loaded_databases)
+  cat("Missing database names: ", paste(missing_dbs, collapse = ", "), "\n")
+  
+  cat("\nDoes the template use different names than the CSV files?\n")
+  cat("CSV files found: ", paste(gsub("^all_|.csv$", "", list.files(base_path, pattern = "^all_.*\\.csv$")), collapse = ", "), "\n")
+}
+```
+
+
+
+# Save Results
+
+```{r save-results}
+# Prepare final results (remove status column for clean output)
+final_results <- statistical_extraction_results %>%
+  select(Figure_Num, Database, Outcome, contrast, p_value, estimate)
+
+# Save the results back to a CSV file
+output_file <- "final_pvalues_and_estimates.csv"
+write_csv(final_results, output_file)
+
+cat("✓ Results saved to:", output_file, "\n")
+cat("✓ Total rows saved:", nrow(final_results), "\n")
+
+# Also save a summary file
+summary_file <- "extraction_summary.csv"
+extraction_summary <- final_results %>%
+  group_by(Database, Outcome) %>%
+  summarise(
+    Total_contrasts = n(),
+    Successful_extractions = sum(!is.na(p_value) & !is.na(estimate)),
+    Success_rate = round(100 * Successful_extractions / Total_contrasts, 1),
+    Significant_results = sum(p_value < 0.05, na.rm = TRUE),
+    Mean_p_value = mean(p_value, na.rm = TRUE),
+    Mean_estimate = mean(estimate, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+write_csv(extraction_summary, summary_file)
+cat("✓ Summary saved to:", summary_file, "\n")
+
+# Save detailed status information if there were failures
+if (any(statistical_extraction_results$status != "Success")) {
+  status_file <- "extraction_status_details.csv"
+  status_details <- statistical_extraction_results %>%
+    filter(status != "Success") %>%
+    select(Figure_Num, Database, Outcome, contrast, status)
+  
+  write_csv(status_details, status_file)
+  cat("⚠️  Failed extraction details saved to:", status_file, "\n")
+}
+
+cat("\n=== Final Summary ===\n")
+cat("Successfully extracted:", sum(statistical_extraction_results$status == "Success"), "/", nrow(statistical_extraction_results), "rows\n")
+cat("Success rate:", round(100 * sum(statistical_extraction_results$status == "Success") / nrow(statistical_extraction_results), 1), "%\n")
+```
+
+# Session Information
+
+```{r session-info}
+sessionInfo()
+```

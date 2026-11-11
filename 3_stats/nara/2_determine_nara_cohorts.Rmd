@@ -1,0 +1,688 @@
+---
+title: "Determining Optimal NARA Cutoff for Bimodal Distribution"
+author: "Analysis"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+source(file.path(Sys.getenv("NAVCITY_CODE"), "setup.R"), local = TRUE)   # data paths, sample filter, fixes
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE, fig.width=12, fig.height=8)
+```
+
+```{r load-libraries, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(diptest)
+library(cowplot)
+library(viridis)
+```
+
+```{r load-data}
+# Load the non-navigation data
+non_nav_data <- read_csv(file.path(paper_data_path, "non_nav_data.csv"))
+
+# Check the structure
+cat("Dataset dimensions:", dim(non_nav_data), "\n")
+cat("Age range:", range(non_nav_data$Age, na.rm = TRUE), "\n")
+cat("NARA range:", range(non_nav_data$NARA, na.rm = TRUE), "\n")
+cat("Groups:", unique(non_nav_data$Group), "\n")
+
+# Focus on OA group for cutoff determination
+oa_data <- non_nav_data %>% filter(Group == "OA")
+cat("\nOlder adults sample size:", nrow(oa_data), "\n")
+```
+
+## Step 1: Confirm Bimodality
+
+```{r test-bimodality}
+# Test for bimodality using Hartigan's dip test
+dip_test <- dip.test(oa_data$NARA)
+cat("Hartigan's Dip Test for Bimodality:\n")
+cat("D =", round(dip_test$statistic, 4), "\n")
+cat("p-value =", round(dip_test$p.value, 4), "\n")
+cat("Interpretation:", ifelse(dip_test$p.value < 0.05, 
+                            "Significant departure from unimodality (bimodal)", 
+                            "No significant evidence of bimodality"), "\n\n")
+
+# Basic descriptive statistics
+cat("NARA descriptive statistics in OA group:\n")
+summary(oa_data$NARA)
+```
+
+## Step 2: Examine the Data Distribution
+
+```{r examine-distribution}
+# Sort and display all NARA scores
+oa_nara_sorted <- oa_data %>% 
+  arrange(NARA) %>%
+  select(Participant, NARA) %>%
+  mutate(rank = row_number())
+
+cat("All OA NARA scores (sorted):\n")
+print(oa_nara_sorted)
+
+# Look for obvious gaps in the data
+oa_sorted_values <- sort(oa_data$NARA)
+gaps <- diff(oa_sorted_values)
+gap_info <- data.frame(
+  lower_score = oa_sorted_values[-length(oa_sorted_values)],
+  upper_score = oa_sorted_values[-1],
+  gap_size = gaps
+) %>%
+  arrange(desc(gap_size))
+
+cat("\nLargest gaps between consecutive NARA scores:\n")
+print(head(gap_info, 5))
+```
+
+## Step 3: Multiple Methods for Cutoff Determination
+
+```{r find-optimal-cutoff}
+oa_nara_values <- oa_data$NARA
+
+cat("=== CUTOFF DETERMINATION METHODS ===\n\n")
+
+# Method 1: Kernel Density Estimation to find the valley
+density_est <- density(oa_nara_values, bw = "SJ")  # Sheather-Jones bandwidth
+
+# Find local minima in the density
+density_df <- data.frame(x = density_est$x, y = density_est$y)
+local_minima <- c()
+for(i in 2:(nrow(density_df)-1)) {
+  if(density_df$y[i] < density_df$y[i-1] && density_df$y[i] < density_df$y[i+1]) {
+    local_minima <- c(local_minima, density_df$x[i])
+  }
+}
+
+# Filter minima to reasonable range
+valid_minima <- local_minima[local_minima >= min(oa_nara_values) & local_minima <= max(oa_nara_values)]
+
+cat("Method 1 - Kernel Density local minima:")
+if(length(valid_minima) > 0) {
+  cat(" ", round(valid_minima, 3), "\n")
+} else {
+  cat(" None found\n")
+}
+
+# Method 2: Histogram-based approach
+hist_data <- hist(oa_nara_values, breaks = 8, plot = FALSE)
+min_count_idx <- which.min(hist_data$counts)
+histogram_cutoff <- hist_data$mids[min_count_idx]
+cat("Method 2 - Histogram minimum bin center:", round(histogram_cutoff, 3), "\n")
+
+# Method 3: Gap detection - find largest gap between consecutive scores
+largest_gap_idx <- which.max(gaps)
+gap_cutoff <- (oa_sorted_values[largest_gap_idx] + oa_sorted_values[largest_gap_idx + 1]) / 2
+cat("Method 3 - Largest gap midpoint:", round(gap_cutoff, 3), "\n")
+cat("   Gap between scores:", oa_sorted_values[largest_gap_idx], "and", oa_sorted_values[largest_gap_idx + 1], "\n")
+cat("   Gap size:", round(gaps[largest_gap_idx], 3), "\n")
+
+# Method 4: Mixture model approach
+tryCatch({
+  if(requireNamespace("mixtools", quietly = TRUE)) {
+    library(mixtools)
+    mixture_model <- normalmixEM(oa_nara_values, k = 2, verb = FALSE)
+    
+    mu1 <- mixture_model$mu[1]
+    mu2 <- mixture_model$mu[2] 
+    sigma1 <- mixture_model$sigma[1]
+    sigma2 <- mixture_model$sigma[2]
+    lambda1 <- mixture_model$lambda[1]
+    lambda2 <- mixture_model$lambda[2]
+    
+    # Simple approximation of intersection
+    mixture_cutoff <- (mu1 * lambda2 + mu2 * lambda1) / (lambda1 + lambda2)
+    
+    cat("Method 4 - Mixture model intersection (approx):", round(mixture_cutoff, 3), "\n")
+    cat("   Component 1: mean =", round(mu1, 2), "sd =", round(sigma1, 2), "weight =", round(lambda1, 2), "\n")
+    cat("   Component 2: mean =", round(mu2, 2), "sd =", round(sigma2, 2), "weight =", round(lambda2, 2), "\n")
+  } else {
+    cat("Method 4 - Mixture model: mixtools package not available\n")
+    mixture_cutoff <- NA
+  }
+}, error = function(e) {
+  cat("Method 4 - Mixture model failed:", e$message, "\n")
+  mixture_cutoff <- NA
+})
+
+# Method 5: Visual inspection of 4 cutoff
+cutoff_4_high <- sum(oa_nara_values >= 4)
+cutoff_4_low <- sum(oa_nara_values < 4)
+cat("Method 5 - Traditional 4 cutoff: High =", cutoff_4_high, "Low =", cutoff_4_low, "\n")
+```
+
+## Step 4: Choose Optimal Cutoff
+
+```{r choose-cutoff}
+# Prioritize gap detection for bimodal data, as it's most intuitive
+optimal_cutoff <- gap_cutoff
+cutoff_method <- "Largest gap detection"
+
+# Test various cutoffs
+cutoff_options <- list(
+  "Gap detection" = gap_cutoff,
+  "Histogram minimum" = histogram_cutoff,
+  "Traditional 4.0" = 4.0
+)
+
+if(length(valid_minima) > 0) {
+  cutoff_options[["Density minimum"]] <- valid_minima[1]
+}
+
+if(exists("mixture_cutoff") && !is.na(mixture_cutoff)) {
+  cutoff_options[["Mixture model"]] <- mixture_cutoff
+}
+
+cat("\n=== CUTOFF COMPARISON ===\n")
+cutoff_results <- data.frame(
+  Method = names(cutoff_options),
+  Cutoff = round(unlist(cutoff_options), 3),
+  High_n = sapply(cutoff_options, function(x) sum(oa_nara_values >= x)),
+  Low_n = sapply(cutoff_options, function(x) sum(oa_nara_values < x)),
+  stringsAsFactors = FALSE
+)
+
+print(cutoff_results)
+
+cat("\n=== RECOMMENDED CUTOFF ===\n")
+cat("Optimal cutoff:", round(optimal_cutoff, 3), "\n")
+cat("Method:", cutoff_method, "\n")
+cat("Resulting groups: High =", sum(oa_nara_values >= optimal_cutoff), 
+    "Low =", sum(oa_nara_values < optimal_cutoff), "\n")
+```
+
+## Step 5: Visualize the Cutoff
+
+```{r visualize-cutoff, fig.width=14, fig.height=10}
+# Create comprehensive visualization
+library(ggplot2)
+
+# Plot 1: Histogram with density overlay and cutoff options
+p1 <- ggplot(oa_data, aes(x = NARA)) +
+  geom_histogram(aes(y = ..density..), bins = 12, alpha = 0.7, fill = "lightblue", color = "black") +
+  geom_density(color = "blue", size = 1.2) +
+  geom_vline(xintercept = optimal_cutoff, color = "darkgreen", linetype = "solid", size = 1.5) +
+  geom_vline(xintercept = 4.0, color = "red", linetype = "dashed", size = 1, alpha = 0.7) +
+  annotate("text", x = optimal_cutoff, y = max(density(oa_nara_values)$y) * 0.9, 
+           label = paste0("Optimal\n(", round(optimal_cutoff, 1), ")"), 
+           color = "darkgreen", hjust = -0.1, fontweight = "bold") +
+  annotate("text", x = 4.0, y = max(density(oa_nara_values)$y) * 0.8, 
+           label = "Traditional\n(4.0)", color = "red", hjust = 1.1) +
+  labs(title = "NARA Distribution in Older Adults with Cutoff Options",
+       subtitle = paste0("Optimal cutoff: ", round(optimal_cutoff, 3), " (", cutoff_method, ")"),
+       x = "NARA Score", y = "Density") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 14, face = "bold"))
+
+# Plot 2: Individual data points
+p2 <- ggplot(oa_data, aes(x = NARA, y = 1)) +
+  geom_jitter(height = 0.1, alpha = 0.7, size = 3, 
+              color = ifelse(oa_data$NARA >= optimal_cutoff, "#2E86AB", "#A23B72")) +
+  geom_vline(xintercept = optimal_cutoff, color = "darkgreen", linetype = "solid", size = 1.5) +
+  labs(title = "Individual NARA Scores Colored by Final Groups",
+       subtitle = paste0("Blue = OA High (n=", sum(oa_nara_values >= optimal_cutoff), 
+                        "), Pink = OA Low (n=", sum(oa_nara_values < optimal_cutoff), ")"),
+       x = "NARA Score", y = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+        plot.title = element_text(size = 14, face = "bold"))
+
+# Plot 3: Gap analysis
+gap_data <- data.frame(
+  lower = oa_sorted_values[-length(oa_sorted_values)],
+  upper = oa_sorted_values[-1],
+  gap = gaps,
+  midpoint = (oa_sorted_values[-length(oa_sorted_values)] + oa_sorted_values[-1]) / 2
+)
+
+p3 <- ggplot(gap_data, aes(x = midpoint, y = gap)) +
+  geom_col(alpha = 0.7, fill = "lightcoral") +
+  geom_point(size = 3, color = "darkred") +
+  geom_vline(xintercept = optimal_cutoff, color = "darkgreen", linetype = "solid", size = 1.5) +
+  labs(title = "Gap Sizes Between Consecutive NARA Scores",
+       subtitle = "Largest gap indicates optimal separation point",
+       x = "NARA Score (midpoint of gap)", y = "Gap Size") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 14, face = "bold"))
+
+# Plot 4: Final grouping summary
+group_data <- data.frame(
+  Group = c("OA High", "OA Low"),
+  Count = c(sum(oa_nara_values >= optimal_cutoff), sum(oa_nara_values < optimal_cutoff)),
+  Mean_NARA = c(mean(oa_nara_values[oa_nara_values >= optimal_cutoff]),
+                mean(oa_nara_values[oa_nara_values < optimal_cutoff])),
+  SD_NARA = c(sd(oa_nara_values[oa_nara_values >= optimal_cutoff]),
+              sd(oa_nara_values[oa_nara_values < optimal_cutoff]))
+)
+
+p4 <- ggplot(group_data, aes(x = Group, y = Count, fill = Group)) +
+  geom_col(alpha = 0.8) +
+  geom_text(aes(label = Count), vjust = -0.5, size = 6, fontface = "bold") +
+  scale_fill_manual(values = c("OA High" = "#2E86AB", "OA Low" = "#A23B72")) +
+  labs(title = "Final Group Sizes",
+       subtitle = paste0("Cutoff = ", round(optimal_cutoff, 3)),
+       x = "Group", y = "Number of Participants") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.title = element_text(size = 14, face = "bold"))
+
+# Combine all plots
+plot_grid(p1, p2, p3, p4, nrow = 2, ncol = 2, labels = c("A", "B", "C", "D"))
+```
+
+## Step 6: Final Summary and Export
+
+```{r final-summary}
+cat("\n=== FINAL CUTOFF DETERMINATION SUMMARY ===\n")
+cat("Recommended NARA cutoff:", round(optimal_cutoff, 6), "\n")
+cat("Method used:", cutoff_method, "\n")
+cat("Bimodality test: D =", round(dip_test$statistic, 4), ", p =", round(dip_test$p.value, 4), "\n")
+cat("Final group sizes: OA High =", sum(oa_nara_values >= optimal_cutoff), 
+    ", OA Low =", sum(oa_nara_values < optimal_cutoff), "\n")
+
+# Group characteristics
+high_group <- oa_nara_values[oa_nara_values >= optimal_cutoff]
+low_group <- oa_nara_values[oa_nara_values < optimal_cutoff]
+
+cat("\nOA High group NARA scores:\n")
+cat("  Range:", min(high_group), "-", max(high_group), "\n")
+cat("  Mean ± SD:", round(mean(high_group), 2), "±", round(sd(high_group), 2), "\n")
+cat("  Median (IQR):", median(high_group), "(", quantile(high_group, 0.25), "-", quantile(high_group, 0.75), ")\n")
+
+cat("\nOA Low group NARA scores:\n")
+cat("  Range:", min(low_group), "-", max(low_group), "\n")
+cat("  Mean ± SD:", round(mean(low_group), 2), "±", round(sd(low_group), 2), "\n")
+cat("  Median (IQR):", median(low_group), "(", quantile(low_group, 0.25), "-", quantile(low_group, 0.75), ")\n")
+
+# Save the cutoff for use in other analyses
+optimal_cutoff_value <- optimal_cutoff
+save(optimal_cutoff_value, file = "optimal_nara_cutoff.RData")
+cat("\nOptimal cutoff saved to 'optimal_nara_cutoff.RData' for use in subsequent analyses.\n")
+
+# Also create a simple text file with the cutoff
+writeLines(as.character(round(optimal_cutoff, 6)), "optimal_nara_cutoff.txt")
+cat("Cutoff value also saved to 'optimal_nara_cutoff.txt'\n")
+
+# Group characteristics
+high_group <- oa_nara_values[oa_nara_values >= optimal_cutoff]
+low_group <- oa_nara_values[oa_nara_values < optimal_cutoff]
+
+# Extract YA group NARA scores
+ya_data <- non_nav_data %>% filter(Group == "YA")
+ya_nara_values <- ya_data$NARA
+
+cat("\nYA group NARA scores:\n")
+cat("  Range:", min(ya_nara_values), "-", max(ya_nara_values), "\n")
+cat("  Mean ± SD:", round(mean(ya_nara_values), 2), "±", round(sd(ya_nara_values), 2), "\n")
+
+cat("\nOA High group NARA scores:\n")
+cat("  Range:", min(high_group), "-", max(high_group), "\n")
+cat("  Mean ± SD:", round(mean(high_group), 2), "±", round(sd(high_group), 2), "\n")
+cat("  Median (IQR):", median(high_group), "(", quantile(high_group, 0.25), "-", quantile(high_group, 0.75), ")\n")
+
+cat("\nOA Low group NARA scores:\n")
+cat("  Range:", min(low_group), "-", max(low_group), "\n")
+cat("  Mean ± SD:", round(mean(low_group), 2), "±", round(sd(low_group), 2), "\n")
+cat("  Median (IQR):", median(low_group), "(", quantile(low_group, 0.25), "-", quantile(low_group, 0.75), ")\n")
+```
+
+## Step 7: Test YA Group for Bimodality and Normality
+
+```{r ya-bimodality-normality-tests}
+cat("\n=== YOUNG ADULT (YA) GROUP NARA DISTRIBUTION ANALYSIS ===\n\n")
+
+# Test 1: Bimodality using Hartigan's dip test
+cat("1. BIMODALITY TEST (Hartigan's Dip Test)\n")
+cat("----------------------------------------\n")
+ya_dip_test <- dip.test(ya_nara_values)
+cat("D statistic:", round(ya_dip_test$statistic, 4), "\n")
+cat("p-value:", round(ya_dip_test$p.value, 4), "\n")
+cat("Interpretation:", ifelse(ya_dip_test$p.value < 0.05, 
+                            "Significant departure from unimodality (evidence of bimodality)", 
+                            "No significant evidence of bimodality (unimodal distribution)"), "\n")
+cat("Sample size:", length(ya_nara_values), "\n\n")
+
+# Test 2: Normality tests
+cat("2. NORMALITY TESTS\n")
+cat("----------------------------------------\n")
+
+# Shapiro-Wilk test
+shapiro_test <- shapiro.test(ya_nara_values)
+cat("Shapiro-Wilk Test:\n")
+cat("  W statistic:", round(shapiro_test$statistic, 4), "\n")
+cat("  p-value:", round(shapiro_test$p.value, 4), "\n")
+cat("  Interpretation:", ifelse(shapiro_test$p.value < 0.05,
+                               "Reject normality (data is NOT normally distributed)",
+                               "Fail to reject normality (data is consistent with normal distribution)"), "\n\n")
+
+# Kolmogorov-Smirnov test
+ks_test <- ks.test(ya_nara_values, "pnorm", mean(ya_nara_values), sd(ya_nara_values))
+cat("Kolmogorov-Smirnov Test:\n")
+cat("  D statistic:", round(ks_test$statistic, 4), "\n")
+cat("  p-value:", round(ks_test$p.value, 4), "\n")
+cat("  Interpretation:", ifelse(ks_test$p.value < 0.05,
+                               "Reject normality (data is NOT normally distributed)",
+                               "Fail to reject normality (data is consistent with normal distribution)"), "\n\n")
+
+# Anderson-Darling test (if nortest package is available)
+if(requireNamespace("nortest", quietly = TRUE)) {
+  library(nortest)
+  ad_test <- ad.test(ya_nara_values)
+  cat("Anderson-Darling Test:\n")
+  cat("  A statistic:", round(ad_test$statistic, 4), "\n")
+  cat("  p-value:", round(ad_test$p.value, 4), "\n")
+  cat("  Interpretation:", ifelse(ad_test$p.value < 0.05,
+                                 "Reject normality (data is NOT normally distributed)",
+                                 "Fail to reject normality (data is consistent with normal distribution)"), "\n\n")
+} else {
+  cat("Anderson-Darling Test: nortest package not available\n\n")
+}
+
+# Descriptive statistics for normality assessment
+cat("3. DISTRIBUTION CHARACTERISTICS\n")
+cat("----------------------------------------\n")
+cat("Mean:", round(mean(ya_nara_values), 3), "\n")
+cat("Median:", round(median(ya_nara_values), 3), "\n")
+cat("Standard deviation:", round(sd(ya_nara_values), 3), "\n")
+cat("Skewness:", round((mean(ya_nara_values) - median(ya_nara_values)) / sd(ya_nara_values), 3), "(rough estimate)\n")
+cat("Range:", min(ya_nara_values), "-", max(ya_nara_values), "\n")
+cat("IQR:", round(IQR(ya_nara_values), 3), "\n\n")
+
+# Calculate moments for formal skewness and kurtosis if e1071 is available
+if(requireNamespace("e1071", quietly = TRUE)) {
+  library(e1071)
+  cat("Formal skewness:", round(skewness(ya_nara_values), 3), 
+      "(< 0 = left-skewed, > 0 = right-skewed)\n")
+  cat("Kurtosis:", round(kurtosis(ya_nara_values), 3), 
+      "(< 0 = light-tailed, > 0 = heavy-tailed)\n\n")
+}
+
+cat("4. SUMMARY\n")
+cat("----------------------------------------\n")
+cat("Based on the statistical tests:\n")
+cat("• Bimodality: ", ifelse(ya_dip_test$p.value < 0.05, 
+                             "YES - Evidence of bimodality", 
+                             "NO - Unimodal distribution"), "\n")
+cat("• Normality: ", ifelse(shapiro_test$p.value < 0.05, 
+                            "REJECTED - Data is NOT normally distributed", 
+                            "ACCEPTED - Data is consistent with normal distribution"), "\n")
+
+# If non-normal, provide additional diagnostics
+if(shapiro_test$p.value < 0.05) {
+  cat("\n5. NON-NORMALITY DIAGNOSTICS\n")
+  cat("----------------------------------------\n")
+  cat("Since the data is not normally distributed, examining the type of departure:\n\n")
+  
+  # Skewness interpretation
+  if(requireNamespace("e1071", quietly = TRUE)) {
+    skew_val <- skewness(ya_nara_values)
+    cat("Skewness:", round(skew_val, 3), "\n")
+    if(abs(skew_val) < 0.5) {
+      cat("  Interpretation: Approximately symmetric\n")
+    } else if(skew_val < -0.5) {
+      cat("  Interpretation: Left-skewed (negative skew) - tail extends to the left\n")
+    } else if(skew_val > 0.5) {
+      cat("  Interpretation: Right-skewed (positive skew) - tail extends to the right\n")
+    }
+    
+    # Kurtosis interpretation
+    kurt_val <- kurtosis(ya_nara_values)
+    cat("\nKurtosis:", round(kurt_val, 3), "\n")
+    if(abs(kurt_val) < 0.5) {
+      cat("  Interpretation: Similar to normal distribution (mesokurtic)\n")
+    } else if(kurt_val < -0.5) {
+      cat("  Interpretation: Light-tailed, flatter than normal (platykurtic)\n")
+    } else if(kurt_val > 0.5) {
+      cat("  Interpretation: Heavy-tailed, more peaked than normal (leptokurtic)\n")
+    }
+    
+    cat("\nPrimary source of non-normality: ")
+    if(abs(skew_val) > abs(kurt_val) && abs(skew_val) > 0.5) {
+      cat("Skewness (asymmetry)\n")
+    } else if(abs(kurt_val) > abs(skew_val) && abs(kurt_val) > 0.5) {
+      cat("Kurtosis (tail behavior)\n")
+    } else if(abs(skew_val) > 0.5 && abs(kurt_val) > 0.5) {
+      cat("Both skewness and kurtosis\n")
+    } else {
+      cat("Mild departure from normality\n")
+    }
+  }
+  
+  # Check for outliers
+  Q1 <- quantile(ya_nara_values, 0.25)
+  Q3 <- quantile(ya_nara_values, 0.75)
+  IQR_val <- IQR(ya_nara_values)
+  lower_fence <- Q1 - 1.5 * IQR_val
+  upper_fence <- Q3 + 1.5 * IQR_val
+  outliers <- ya_nara_values[ya_nara_values < lower_fence | ya_nara_values > upper_fence]
+  
+  cat("\nOutlier Detection (1.5 × IQR rule):\n")
+  cat("  Lower fence:", round(lower_fence, 3), "\n")
+  cat("  Upper fence:", round(upper_fence, 3), "\n")
+  cat("  Number of outliers:", length(outliers), "\n")
+  if(length(outliers) > 0) {
+    cat("  Outlier values:", paste(round(outliers, 2), collapse = ", "), "\n")
+    cat("  Outliers may be contributing to non-normality\n")
+  } else {
+    cat("  No outliers detected\n")
+  }
+}
+```
+
+## Step 8: Visualize YA Group Distribution
+
+```{r ya-distribution-visualization, fig.width=14, fig.height=10}
+# Create comprehensive visualization of YA NARA distribution
+
+# Plot 1: Histogram with density overlay
+p1_ya <- ggplot(ya_data, aes(x = NARA)) +
+  geom_histogram(aes(y = ..density..), bins = 15, alpha = 0.7, fill = "salmon", color = "black") +
+  geom_density(color = "darkred", size = 1.2) +
+  stat_function(fun = dnorm, 
+                args = list(mean = mean(ya_nara_values), sd = sd(ya_nara_values)),
+                color = "blue", linetype = "dashed", size = 1) +
+  labs(title = "YA Group NARA Distribution",
+       subtitle = paste0("Histogram with kernel density (red) and theoretical normal (blue dashed)\n",
+                        "Shapiro-Wilk p = ", round(shapiro_test$p.value, 4)),
+       x = "NARA Score", y = "Density") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 14, face = "bold"))
+
+# Plot 2: Q-Q plot for normality assessment
+qq_data <- data.frame(
+  theoretical = qqnorm(ya_nara_values, plot.it = FALSE)$x,
+  sample = qqnorm(ya_nara_values, plot.it = FALSE)$y
+)
+
+p2_ya <- ggplot(qq_data, aes(x = theoretical, y = sample)) +
+  geom_point(size = 3, alpha = 0.7, color = "salmon") +
+  geom_abline(intercept = mean(ya_nara_values), slope = sd(ya_nara_values), 
+              color = "blue", linetype = "dashed", size = 1) +
+  labs(title = "Q-Q Plot for Normality Assessment",
+       subtitle = "Points should fall on the diagonal line if data is normally distributed",
+       x = "Theoretical Quantiles", y = "Sample Quantiles") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 14, face = "bold"))
+
+# Plot 3: Individual data points
+p3_ya <- ggplot(ya_data, aes(x = NARA, y = 1)) +
+  geom_jitter(height = 0.1, alpha = 0.7, size = 3, color = "salmon") +
+  labs(title = "Individual YA NARA Scores",
+       subtitle = paste0("n = ", length(ya_nara_values)),
+       x = "NARA Score", y = "") +
+  theme_minimal() +
+  theme(axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+        plot.title = element_text(size = 14, face = "bold"))
+
+# Plot 4: Box plot with violin overlay
+p4_ya <- ggplot(ya_data, aes(x = "YA", y = NARA)) +
+  geom_violin(fill = "salmon", alpha = 0.5) +
+  geom_boxplot(width = 0.2, fill = "white", alpha = 0.8) +
+  geom_jitter(width = 0.1, alpha = 0.5, size = 2, color = "darkred") +
+  labs(title = "YA NARA Score Distribution",
+       subtitle = paste0("Mean = ", round(mean(ya_nara_values), 2), 
+                        ", SD = ", round(sd(ya_nara_values), 2),
+                        ", Median = ", round(median(ya_nara_values), 2)),
+       x = "", y = "NARA Score") +
+  theme_minimal() +
+  theme(plot.title = element_text(size = 14, face = "bold"))
+
+# Combine all plots
+plot_grid(p1_ya, p2_ya, p3_ya, p4_ya, nrow = 2, ncol = 2, 
+          labels = c("A", "B", "C", "D"))
+```
+
+## Step 9: Advanced Non-Normality Diagnostics (if applicable)
+
+```{r advanced-diagnostics, fig.width=14, fig.height=10}
+# Only run if data is non-normal
+if(shapiro_test$p.value < 0.05) {
+  cat("=== ADVANCED NON-NORMALITY DIAGNOSTICS ===\n\n")
+  
+  # Test potential transformations
+  cat("TRANSFORMATION ANALYSIS\n")
+  cat("Testing if transformations improve normality:\n\n")
+  
+  # Log transformation (if all values are positive)
+  if(min(ya_nara_values) > 0) {
+    log_transformed <- log(ya_nara_values)
+    log_shapiro <- shapiro.test(log_transformed)
+    cat("Log transformation:\n")
+    cat("  Shapiro-Wilk p-value:", round(log_shapiro$p.value, 4), "\n")
+    cat("  ", ifelse(log_shapiro$p.value > shapiro_test$p.value, 
+                    "IMPROVED normality", "Did not improve normality"), "\n\n")
+  } else {
+    log_shapiro <- NULL
+    cat("Log transformation: Not applicable (contains zero or negative values)\n\n")
+  }
+  
+  # Square root transformation
+  if(min(ya_nara_values) >= 0) {
+    sqrt_transformed <- sqrt(ya_nara_values)
+    sqrt_shapiro <- shapiro.test(sqrt_transformed)
+    cat("Square root transformation:\n")
+    cat("  Shapiro-Wilk p-value:", round(sqrt_shapiro$p.value, 4), "\n")
+    cat("  ", ifelse(sqrt_shapiro$p.value > shapiro_test$p.value, 
+                    "IMPROVED normality", "Did not improve normality"), "\n\n")
+  } else {
+    sqrt_shapiro <- NULL
+    cat("Square root transformation: Not applicable (contains negative values)\n\n")
+  }
+  
+  # Square transformation (for left-skewed data)
+  square_transformed <- ya_nara_values^2
+  square_shapiro <- shapiro.test(square_transformed)
+  cat("Square transformation:\n")
+  cat("  Shapiro-Wilk p-value:", round(square_shapiro$p.value, 4), "\n")
+  cat("  ", ifelse(square_shapiro$p.value > shapiro_test$p.value, 
+                  "IMPROVED normality", "Did not improve normality"), "\n\n")
+  
+  # Determine best transformation
+  transformations <- list(
+    "Original" = list(data = ya_nara_values, p = shapiro_test$p.value)
+  )
+  if(!is.null(log_shapiro)) {
+    transformations[["Log"]] <- list(data = log_transformed, p = log_shapiro$p.value)
+  }
+  if(!is.null(sqrt_shapiro)) {
+    transformations[["Square root"]] <- list(data = sqrt_transformed, p = sqrt_shapiro$p.value)
+  }
+  transformations[["Square"]] <- list(data = square_transformed, p = square_shapiro$p.value)
+  
+  best_transform <- names(which.max(sapply(transformations, function(x) x$p)))
+  cat("Best transformation:", best_transform, 
+      "(p =", round(max(sapply(transformations, function(x) x$p)), 4), ")\n\n")
+  
+  # Create diagnostic plots
+  
+  # Plot 1: Histogram with skewed overlays
+  if(requireNamespace("e1071", quietly = TRUE)) {
+    skew_val <- skewness(ya_nara_values)
+    
+    p1_diag <- ggplot(ya_data, aes(x = NARA)) +
+      geom_histogram(aes(y = ..density..), bins = 15, alpha = 0.5, fill = "salmon") +
+      geom_density(color = "darkred", size = 1.2) +
+      stat_function(fun = dnorm, 
+                    args = list(mean = mean(ya_nara_values), sd = sd(ya_nara_values)),
+                    color = "blue", linetype = "dashed", size = 1) +
+      labs(title = "Distribution Shape Analysis",
+           subtitle = paste0("Skewness = ", round(skew_val, 3), 
+                           ifelse(skew_val > 0, " (right-skewed)", 
+                                  ifelse(skew_val < 0, " (left-skewed)", " (symmetric)"))),
+           x = "NARA Score", y = "Density") +
+      theme_minimal() +
+      theme(plot.title = element_text(size = 12, face = "bold"))
+  } else {
+    p1_diag <- p1_ya
+  }
+  
+  # Plot 2: Detrended Q-Q plot (residuals from theoretical line)
+  theoretical_quantiles <- qqnorm(ya_nara_values, plot.it = FALSE)$x
+  sample_quantiles <- qqnorm(ya_nara_values, plot.it = FALSE)$y
+  expected_quantiles <- mean(ya_nara_values) + sd(ya_nara_values) * theoretical_quantiles
+  residuals <- sample_quantiles - expected_quantiles
+  
+  detrended_qq <- data.frame(
+    theoretical = theoretical_quantiles,
+    residuals = residuals
+  )
+  
+  p2_diag <- ggplot(detrended_qq, aes(x = theoretical, y = residuals)) +
+    geom_point(size = 3, alpha = 0.7, color = "salmon") +
+    geom_hline(yintercept = 0, color = "blue", linetype = "dashed", size = 1) +
+    labs(title = "Detrended Q-Q Plot",
+         subtitle = "Shows deviation from normality (should cluster around zero)",
+         x = "Theoretical Quantiles", y = "Residuals") +
+    theme_minimal() +
+    theme(plot.title = element_text(size = 12, face = "bold"))
+  
+  # Plot 3: Comparison of transformations
+  if(best_transform != "Original") {
+    best_data <- transformations[[best_transform]]$data
+    
+    p3_diag <- ggplot(data.frame(x = best_data), aes(x = x)) +
+      geom_histogram(aes(y = ..density..), bins = 15, alpha = 0.5, fill = "lightgreen") +
+      geom_density(color = "darkgreen", size = 1.2) +
+      stat_function(fun = dnorm, 
+                    args = list(mean = mean(best_data), sd = sd(best_data)),
+                    color = "blue", linetype = "dashed", size = 1) +
+      labs(title = paste("Best Transformation:", best_transform),
+           subtitle = paste0("Shapiro-Wilk p = ", 
+                           round(transformations[[best_transform]]$p, 4)),
+           x = paste(best_transform, "Transformed NARA Score"), y = "Density") +
+      theme_minimal() +
+      theme(plot.title = element_text(size = 12, face = "bold"))
+  } else {
+    p3_diag <- ggplot(ya_data, aes(x = NARA, y = 1)) +
+      geom_text(aes(label = "No transformation improves normality"), 
+                x = mean(ya_nara_values), y = 1, size = 5) +
+      labs(title = "Transformation Analysis",
+           subtitle = "Original distribution is best") +
+      theme_void() +
+      theme(plot.title = element_text(size = 12, face = "bold"))
+  }
+  
+  # Plot 4: Distribution of residuals from mean
+  residuals_from_mean <- ya_nara_values - mean(ya_nara_values)
+  standardized_residuals <- residuals_from_mean / sd(ya_nara_values)
+  
+  p4_diag <- ggplot(data.frame(residuals = standardized_residuals), aes(x = residuals)) +
+    geom_histogram(aes(y = ..density..), bins = 15, alpha = 0.5, fill = "lightblue") +
+    geom_density(color = "darkblue", size = 1.2) +
+    stat_function(fun = dnorm, args = list(mean = 0, sd = 1),
+                  color = "red", linetype = "dashed", size = 1) +
+    labs(title = "Standardized Residuals from Mean",
+         subtitle = "Should match standard normal (red dashed) if data is normal",
+         x = "Standardized Residuals", y = "Density") +
+    theme_minimal() +
+    theme(plot.title = element_text(size = 12, face = "bold"))
+  
+  # Combine diagnostic plots
+  plot_grid(p1_diag, p2_diag, p3_diag, p4_diag, nrow = 2, ncol = 2, 
+            labels = c("A", "B", "C", "D"))
+  
+} else {
+  cat("Data is normally distributed - advanced diagnostics not needed.\n")
+}
+```

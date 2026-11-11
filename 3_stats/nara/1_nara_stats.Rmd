@@ -1,0 +1,512 @@
+---
+title: "Statistical Analysis: Comparing NARA Scores between Young Adults and Older Adults"
+author: "Your Name"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: flatly
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+source(file.path(Sys.getenv("NAVCITY_CODE"), "setup.R"), local = TRUE)   # data paths, sample filter, fixes
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width = 10, fig.height = 6)
+```
+
+# Introduction
+
+This analysis compares NARA scores between Young Adults (YA) and Older Adults (OA) to determine if there are statistically significant differences between the groups. We will systematically test assumptions and select the most appropriate statistical test.
+
+# Load Required Libraries
+
+```{r libraries}
+# Load required libraries
+library(tidyverse)
+library(car)        # for Levene's test
+library(nortest)    # for additional normality tests
+library(ggplot2)
+library(gridExtra)  # for arranging plots
+library(knitr)      # for nice tables
+library(kableExtra) # for enhanced tables
+library(diptest)
+```
+
+# Data Import and Initial Exploration
+
+```{r data-import}
+# Read your data
+data <- read.csv(file.path(paper_data_path, "non_nav_data.csv"))
+
+# Check data structure
+str(data)
+```
+
+```{r data-summary}
+# Basic summary
+summary(data)
+```
+
+## Group and NARA Variable Overview
+
+```{r group-nara-overview}
+# Look at Group and NARA variables specifically
+cat("Group variable summary:\n")
+table(data$Group)
+
+cat("\nNARA variable summary:\n")
+summary(data$NARA)
+
+# Check for missing values
+missing_summary <- data.frame(
+  Variable = c("Group", "NARA"),
+  Missing_Count = c(sum(is.na(data$Group)), sum(is.na(data$NARA))),
+  Missing_Percent = c(
+    round(sum(is.na(data$Group))/nrow(data)*8, 2),
+    round(sum(is.na(data$NARA))/nrow(data)*8, 2)
+  )
+)
+
+kable(missing_summary, caption = "Missing Data Summary") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+```{r data-cleaning}
+# Remove rows with missing NARA or Group data
+data_clean <- data[!is.na(data$NARA) & !is.na(data$Group), ]
+cat("Original dataset size:", nrow(data), "participants\n")
+cat("Clean dataset size:", nrow(data_clean), "participants\n")
+cat("Rows removed:", nrow(data) - nrow(data_clean), "\n")
+```
+
+# Descriptive Statistics
+
+```{r descriptive-stats}
+# Calculate descriptive statistics by group
+desc_stats <- data_clean %>%
+  group_by(Group) %>%
+  summarise(
+    n = n(),
+    mean = round(mean(NARA, na.rm = TRUE), 3),
+    sd = round(sd(NARA, na.rm = TRUE), 3),
+    median = round(median(NARA, na.rm = TRUE), 3),
+    q1 = round(quantile(NARA, 0.25, na.rm = TRUE), 3),
+    q3 = round(quantile(NARA, 0.75, na.rm = TRUE), 3),
+    min = round(min(NARA, na.rm = TRUE), 3),
+    max = round(max(NARA, na.rm = TRUE), 3),
+    .groups = 'drop'
+  )
+
+kable(desc_stats, caption = "Descriptive Statistics by Group") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+# Data Visualization
+
+## Distribution Plots
+
+```{r distribution-plots, fig.height=8}
+# Create histograms for each group
+p1 <- ggplot(data_clean, aes(x = NARA, fill = Group)) +
+  geom_histogram(alpha = 0.7, bins = 15, position = "identity") +
+  facet_wrap(~Group) +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Distribution of NARA Scores by Group",
+       x = "NARA Score", y = "Frequency") +
+  theme(plot.title = element_text(size = 14, hjust = 0.5))
+
+# Create boxplot
+p2 <- ggplot(data_clean, aes(x = Group, y = NARA, fill = Group)) +
+  geom_boxplot(alpha = 0.7) +
+  geom_jitter(width = 0.2, alpha = 0.5) +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "NARA Scores by Group",
+       x = "Group", y = "NARA Score") +
+  theme(plot.title = element_text(size = 14, hjust = 0.5))
+
+# Arrange plots
+grid.arrange(p1, p2, ncol = 1)
+```
+
+## Normality Assessment: Q-Q Plots
+
+```{r qq-plots}
+# Q-Q plots for normality assessment
+ggplot(data_clean, aes(sample = NARA)) +
+  geom_qq() +
+  geom_qq_line(color = "red") +
+  facet_wrap(~Group) +
+  theme_minimal() +
+  labs(title = "Q-Q Plots for Normality Assessment",
+       subtitle = "Points should follow the red line if data is normally distributed") +
+  theme(plot.title = element_text(size = 14, hjust = 0.5))
+```
+
+# Assumption Testing
+
+## Normality Tests
+
+```{r normality-tests}
+# Test for Normality (by group)
+groups <- unique(data_clean$Group)
+normality_results <- data.frame()
+
+for(group in groups) {
+  group_data <- data_clean[data_clean$Group == group, "NARA"]
+  shapiro_result <- shapiro.test(group_data)
+  
+  normality_results <- rbind(normality_results, data.frame(
+    Group = group,
+    n = length(group_data),
+    W_statistic = round(shapiro_result$statistic, 4),
+    p_value = round(shapiro_result$p.value, 4),
+    Normal = ifelse(shapiro_result$p.value >= 0.05, "Yes", "No")
+  ))
+}
+
+kable(normality_results, caption = "Shapiro-Wilk Normality Tests by Group") %>%
+  kable_styling(bootstrap_options = c("striped", "hover")) %>%
+  add_footnote("Normal = Yes if p ≥ 0.05 (fail to reject normality)")
+```
+
+```{r normality-interpretation}
+# Overall normality assessment
+all_normal <- all(normality_results$Normal == "Yes")
+cat("Overall normality assumption met:", all_normal, "\n")
+```
+
+## Homogeneity of Variance Test
+
+```{r variance-test}
+# Levene's test for homogeneity of variance
+levene_result <- leveneTest(NARA ~ Group, data = data_clean)
+
+variance_summary <- data.frame(
+  Test = "Levene's Test",
+  F_statistic = round(levene_result$`F value`[1], 4),
+  df1 = levene_result$Df[1],
+  df2 = levene_result$Df[2],
+  p_value = round(levene_result$`Pr(>F)`[1], 4),
+  Equal_Variances = ifelse(levene_result$`Pr(>F)`[1] >= 0.05, "Yes", "No")
+)
+
+kable(variance_summary, caption = "Homogeneity of Variance Test") %>%
+  kable_styling(bootstrap_options = c("striped", "hover")) %>%
+  add_footnote("Equal_Variances = Yes if p ≥ 0.05")
+
+equal_var <- variance_summary$Equal_Variances == "Yes"
+cat("Equal variances assumption met:", equal_var, "\n")
+```
+
+## Sample Size Assessment
+
+```{r sample-size}
+# Sample size check
+group_sizes <- table(data_clean$Group)
+sample_size_summary <- data.frame(
+  Group = names(group_sizes),
+  n = as.numeric(group_sizes),
+  Adequate_Size = ifelse(as.numeric(group_sizes) >= 30, "Yes (≥30)", "Small (<30)")
+)
+
+kable(sample_size_summary, caption = "Sample Size Assessment") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+min_size <- min(group_sizes)
+cat("Minimum group size:", min_size, "\n")
+```
+
+# Test Selection Decision
+
+```{r test-decision}
+# Create decision summary
+decision_summary <- data.frame(
+  Assumption = c("Normality", "Equal Variances", "Adequate Sample Size"),
+  Met = c(all_normal, equal_var, min_size >= 30),
+  Details = c(
+    paste("All groups normal:", all_normal),
+    paste("Equal variances:", equal_var),
+    paste("Min n =", min_size)
+  )
+)
+
+kable(decision_summary, caption = "Assumption Testing Summary") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+# Determine recommended test
+if(all_normal && equal_var) {
+  recommended_test <- "Independent samples t-test (equal variances)"
+  test_type <- "parametric"
+} else if(all_normal && !equal_var) {
+  recommended_test <- "Welch's t-test (unequal variances)"
+  test_type <- "parametric"
+} else {
+  recommended_test <- "Mann-Whitney U test (non-parametric)"
+  test_type <- "non-parametric"
+}
+```
+
+## **Recommended Test: `r recommended_test`**
+
+**Rationale:** 
+- Normality assumption: `r ifelse(all_normal, "✓ Met", "✗ Violated")`
+- Equal variances assumption: `r ifelse(equal_var, "✓ Met", "✗ Violated")`
+- Sample size: `r ifelse(min_size >= 30, "✓ Adequate", "⚠ Small")`
+
+# Statistical Test Results
+
+## Parametric Tests
+
+```{r parametric-tests}
+if(length(groups) == 2) {
+  # Standard t-test (assuming equal variances)
+  t_test_equal <- t.test(NARA ~ Group, data = data_clean, var.equal = TRUE)
+  
+  # Welch's t-test (not assuming equal variances)
+  t_test_welch <- t.test(NARA ~ Group, data = data_clean, var.equal = FALSE)
+  
+  # Create results table
+  parametric_results <- data.frame(
+    Test = c("Independent t-test (equal var)", "Welch's t-test (unequal var)"),
+    t_statistic = c(round(t_test_equal$statistic, 4), round(t_test_welch$statistic, 4)),
+    df = c(round(t_test_equal$parameter, 2), round(t_test_welch$parameter, 2)),
+    p_value = c(round(t_test_equal$p.value, 4), round(t_test_welch$p.value, 4)),
+    CI_lower = c(round(t_test_equal$conf.int[1], 3), round(t_test_welch$conf.int[1], 3)),
+    CI_upper = c(round(t_test_equal$conf.int[2], 3), round(t_test_welch$conf.int[2], 3))
+  )
+  
+  kable(parametric_results, caption = "Parametric Test Results") %>%
+    kable_styling(bootstrap_options = c("striped", "hover")) %>%
+    add_footnote("CI = 95% Confidence Interval for difference in means")
+  
+  # Effect size (Cohen's d)
+  group1_data <- data_clean[data_clean$Group == groups[1], "NARA"]
+  group2_data <- data_clean[data_clean$Group == groups[2], "NARA"]
+  
+  pooled_sd <- sqrt(((length(group1_data)-1)*var(group1_data) + 
+                     (length(group2_data)-1)*var(group2_data)) / 
+                    (length(group1_data) + length(group2_data) - 2))
+  
+  cohens_d <- (mean(group1_data) - mean(group2_data)) / pooled_sd
+  
+  if(abs(cohens_d) < 0.2) {
+    effect_interpretation <- "negligible"
+  } else if(abs(cohens_d) < 0.5) {
+    effect_interpretation <- "small"
+  } else if(abs(cohens_d) < 0.8) {
+    effect_interpretation <- "medium"
+  } else {
+    effect_interpretation <- "large"
+  }
+  
+  effect_size_summary <- data.frame(
+    Measure = "Cohen's d",
+    Value = round(cohens_d, 3),
+    Interpretation = effect_interpretation
+  )
+  
+  kable(effect_size_summary, caption = "Effect Size") %>%
+    kable_styling(bootstrap_options = c("striped", "hover"))
+}
+```
+
+## Non-Parametric Test with Effect Size
+
+```{r nonparametric-test-enhanced}
+# Mann-Whitney U test
+mann_whitney <- wilcox.test(NARA ~ Group, data = data_clean)
+
+# Calculate rank biserial correlation (effect size for Mann-Whitney U test)
+group1_data <- data_clean[data_clean$Group == groups[1], "NARA"]
+group2_data <- data_clean[data_clean$Group == groups[2], "NARA"]
+
+n1 <- length(group1_data)
+n2 <- length(group2_data)
+U <- mann_whitney$statistic
+
+# Calculate rank biserial correlation
+# Method 1: Using U statistic
+r_rb <- 1 - (2 * U) / (n1 * n2)
+
+# Alternative method: Using mean ranks
+combined_data <- c(group1_data, group2_data)
+combined_ranks <- rank(combined_data)
+group1_ranks <- combined_ranks[1:n1]
+group2_ranks <- combined_ranks[(n1+1):(n1+n2)]
+
+mean_rank1 <- mean(group1_ranks)
+mean_rank2 <- mean(group2_ranks)
+
+# Alternative calculation method
+r_rb_alt <- (mean_rank1 - mean_rank2) / ((n1 + n2) / 2)
+
+# Effect size interpretation
+if(abs(r_rb) < 0.1) {
+  rb_interpretation <- "negligible"
+} else if(abs(r_rb) < 0.3) {
+  rb_interpretation <- "small"
+} else if(abs(r_rb) < 0.5) {
+  rb_interpretation <- "medium"
+} else {
+  rb_interpretation <- "large"
+}
+
+# Create comprehensive results table
+nonparametric_results_enhanced <- data.frame(
+  Test = "Mann-Whitney U",
+  W_statistic = round(mann_whitney$statistic, 4),
+  p_value = round(mann_whitney$p.value, 4),
+  Alternative = mann_whitney$alternative,
+  n_group1 = n1,
+  n_group2 = n2,
+  rank_biserial_r = round(r_rb, 3),
+  effect_size = rb_interpretation
+)
+
+kable(nonparametric_results_enhanced, caption = "Non-Parametric Test Results with Effect Size") %>%
+  kable_styling(bootstrap_options = c("striped", "hover")) %>%
+  add_footnote(c(
+    "Rank biserial correlation ranges from -1 to 1",
+    "Effect size: |r| < 0.1 = negligible, 0.1-0.3 = small, 0.3-0.5 = medium, > 0.5 = large"
+  ))
+
+# Additional details table
+effect_details <- data.frame(
+  Measure = c("Rank Biserial Correlation", "Mean Rank Group 1", "Mean Rank Group 2"),
+  Value = c(round(r_rb, 4), round(mean_rank1, 2), round(mean_rank2, 2)),
+  Interpretation = c(rb_interpretation, "", "")
+)
+
+kable(effect_details, caption = "Effect Size Details") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+# Print interpretation
+cat("📊 RANK BISERIAL CORRELATION INTERPRETATION:\n")
+cat("r =", round(r_rb, 3), "(", rb_interpretation, "effect)\n\n")
+
+if(r_rb > 0) {
+  cat("↗️ ", groups[1], "tends to have higher ranks than", groups[2], "\n")
+} else {
+  cat("↘️ ", groups[2], "tends to have higher ranks than", groups[1], "\n")
+}
+
+cat("\n📋 EFFECT SIZE GUIDELINES (Rank Biserial Correlation):\n")
+cat("• |r| < 0.1  = Negligible effect\n")
+cat("• |r| 0.1-0.3 = Small effect\n") 
+cat("• |r| 0.3-0.5 = Medium effect\n")
+cat("• |r| > 0.5   = Large effect\n")
+```
+
+## Function for Easy Calculation
+
+```{r rank-biserial-function}
+# Create a reusable function for rank biserial correlation
+calculate_rank_biserial <- function(x, y) {
+  # x and y are numeric vectors for the two groups
+  n1 <- length(x)
+  n2 <- length(y)
+  
+  # Perform Mann-Whitney U test
+  test_result <- wilcox.test(x, y)
+  U <- test_result$statistic
+  
+  # Calculate rank biserial correlation
+  r_rb <- 1 - (2 * U) / (n1 * n2)
+  
+  # Effect size interpretation
+  if(abs(r_rb) < 0.1) {
+    interpretation <- "negligible"
+  } else if(abs(r_rb) < 0.3) {
+    interpretation <- "small"
+  } else if(abs(r_rb) < 0.5) {
+    interpretation <- "medium"
+  } else {
+    interpretation <- "large"
+  }
+  
+  return(list(
+    r_rb = r_rb,
+    interpretation = interpretation,
+    U_statistic = U,
+    p_value = test_result$p.value,
+    n1 = n1,
+    n2 = n2
+  ))
+}
+
+# Example usage of the function
+result <- calculate_rank_biserial(group1_data, group2_data)
+cat("Function result - Rank biserial r:", round(result$r_rb, 3), 
+    "(", result$interpretation, "effect)\n")
+```
+
+# Results Summary
+
+```{r results-summary}
+# Determine significance
+if(test_type == "parametric") {
+  if(equal_var) {
+    final_p <- t_test_equal$p.value
+    final_test <- "Independent samples t-test"
+  } else {
+    final_p <- t_test_welch$p.value
+    final_test <- "Welch's t-test"
+  }
+} else {
+  final_p <- mann_whitney$p.value
+  final_test <- "Mann-Whitney U test"
+}
+
+significance <- ifelse(final_p < 0.05, "Yes", "No")
+```
+
+## **Final Results**
+
+**Test Used:** `r final_test`  
+**p-value:** `r round(final_p, 4)`  
+**Statistically Significant (α = 0.05):** `r significance`
+
+```{r final-interpretation}
+if(significance == "Yes") {
+  cat("🔍 INTERPRETATION: There IS a statistically significant difference in NARA scores between groups.\n")
+} else {
+  cat("🔍 INTERPRETATION: There is NO statistically significant difference in NARA scores between groups.\n")
+}
+
+if(exists("cohens_d")) {
+  cat("📊 EFFECT SIZE: Cohen's d =", round(cohens_d, 3), "(", effect_interpretation, "effect )\n")
+}
+```
+
+# Recommendations for Reporting
+
+```{r reporting-recommendations}
+cat("REPORTING RECOMMENDATIONS:\n\n")
+
+if(test_type == "non-parametric") {
+  cat("• Report medians and interquartile ranges instead of means and standard deviations\n")
+  cat("• Use Mann-Whitney U test results\n")
+  cat("• Mention assumption violations that led to non-parametric approach\n")
+} else {
+  cat("• Report means and standard deviations\n")
+  cat("• Include effect size (Cohen's d)\n")
+  cat("• Report confidence intervals\n")
+  if(!equal_var) {
+    cat("• Note that Welch's correction was used due to unequal variances\n")
+  }
+}
+
+cat("\nADDITIONAL CONSIDERATIONS:\n")
+cat("• Check for outliers that might influence results\n")
+cat("• Consider the practical significance of any statistical differences\n")
+cat("• Verify that the groups are appropriate for comparison\n")
+```
+
+# Session Information
+
+```{r session-info}
+sessionInfo()
+```

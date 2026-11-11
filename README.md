@@ -1,7 +1,10 @@
 # navcity_analysis
 
-Code that turns NavCity recordings into outcome measures (time, distance, speed, …) and then
-into figures and statistics. Part of the nav_study project of the Neural Plasticity Research Lab.
+Code for the NavCity analyses: outcome measures from the recordings (time, distance, speed, …;
+`1_outcomes/`, Python), figures (`2_figures/`) and statistics (`3_stats/`, R Markdown). The code
+lives here; what it produces goes to `03_data/derivatives/navcity/` (outcome tables) and to an
+analysis folder in `05_analyses/` (figures and statistics). Part of the nav_study project of the
+Neural Plasticity Research Lab.
 GitHub: https://github.com/npresearchlab/navcity-analysis
 
 - [What NavCity is and what the code measures](#what-navcity-is)
@@ -11,7 +14,7 @@ GitHub: https://github.com/npresearchlab/navcity-analysis
 - [Output files](#output-files)
 - [Outcome definitions](#outcome-definitions)
 - [Common tasks](#common-tasks)
-- [Using the outcomes in R (figures and stats)](#using-the-outcomes-in-r)
+- [2_figures and 3_stats: figures and statistics](#2_figures-and-3_stats-figures-and-statistics)
 - [Troubleshooting](#troubleshooting)
 - [The NavAging paper and what changed](#the-navaging-paper-and-what-changed)
 - [Code files](#code-files)
@@ -70,15 +73,15 @@ all paths are worked out from where the code sits in nav_study.
 
 ```
 03_data/sourcedata/      files exactly as the NavCity program saved them (never changed)
-        │   04_code/rawdata/build_rawdata.py
+        │   04_code/build_rawdata/build_rawdata.py
         ▼   (+ decisions in 02_participants/rawdata_corrections.tsv)
 03_data/rawdata/         cleaned copies: standard names, columns, IDs; bad data set to NA
         │   04_code/navcity_analysis/1_outcomes/run_outcomes.py      ← this repository
         ▼   (+ age group and inclusion from 02_participants/participants.tsv)
 03_data/derivatives/navcity/   outcome tables
-        │   04_code/navcity_analysis/2_figures/, 3_stats/  (R Markdown)
-        ▼
-figures and statistics
+        │   04_code/navcity_analysis/2_figures/, 3_stats/  (R Markdown, run_analysis.R)
+        ▼   (+ who to analyse: sample.tsv in the analysis folder)
+05_analyses/<analysis>/output/   figures and statistics, e.g. navcity_60subs
 ```
 
 Rules that keep this working:
@@ -90,11 +93,15 @@ Rules that keep this working:
   using rawdata directly then gets the cleaned data too.
 - **Who is included is decided in `02_participants`**, not in this code (see below).
 
-| Folder here | What | Reads | Writes |
-|---|---|---|---|
-| `1_outcomes/` | Python: outcome tables | `03_data/rawdata/`, `02_participants/` | `03_data/derivatives/navcity/` |
-| `2_figures/` | R Markdown figure scripts | `03_data/derivatives/navcity/` | figures |
-| `3_stats/` | R Markdown statistics scripts | `03_data/derivatives/navcity/` | statistics tables |
+| Folder here | What | Writes to |
+|---|---|---|
+| `1_outcomes/` | Python: outcome tables from rawdata | `03_data/derivatives/navcity/` |
+| `2_figures/` | R Markdown: the figures | `05_analyses/<analysis>/output/figures/` |
+| `3_stats/` | R Markdown: the statistics, one folder per analysis type | `05_analyses/<analysis>/output/stats/<folder>/` |
+| `setup.R`, `run_analysis.R` | Shared R setup, and the script that runs 2_figures and 3_stats for one analysis | |
+
+The code is here (one copy, in git); each folder in `05_analyses/` only holds who is analysed
+(`sample.tsv`), its notes and results, and the outputs.
 
 ---
 
@@ -188,7 +195,7 @@ the totals).
 
 **A new participant was tested.** Add them to `02_participants` and put their files in
 `03_data/sourcedata` (see `00_admin/adding_a_new_participant.md`), rebuild rawdata
-(`python3 04_code/rawdata/build_rawdata.py`, then `python3 04_code/rawdata/check_rawdata.py`),
+(`python3 04_code/build_rawdata/build_rawdata.py`, then `python3 04_code/build_rawdata/check_rawdata.py`),
 then run `python3 run_outcomes.py` here.
 
 **Some NavCity data is bad and should not be used** (e.g. the participant stopped, the program
@@ -201,8 +208,8 @@ glitched). Do not delete it or edit files. Add a `set_na` row to
 
 `frames` = the `frame` numbers in the rawdata file; `columns` can be any of x, z, x_euler,
 y_euler, z_euler. Then rebuild rawdata for that person
-(`python3 04_code/rawdata/build_rawdata.py --task navcity --participants BNC39`), run
-`python3 04_code/rawdata/check_rawdata.py` (without `--participants`, so its report stays
+(`python3 04_code/build_rawdata/build_rawdata.py --task navcity --participants BNC39`), run
+`python3 04_code/build_rawdata/check_rawdata.py` (without `--participants`, so its report stays
 complete), and rerun `run_outcomes.py`. The change is listed automatically in
 `03_data/rawdata/changes_from_sourcedata.tsv`. Other kinds of fixes (wrong ID, restarted block,
 which file to use) are other actions in the same file; see `02_participants/README.md`.
@@ -217,25 +224,67 @@ reason), not here. Their outcomes stay in `all_merged_results.csv`, not in the `
 
 ---
 
-## Using the outcomes in R
+## 2_figures and 3_stats: figures and statistics
 
-Figure and stats scripts go in `2_figures/` and `3_stats/` (R Markdown). Read from
-`03_data/derivatives/navcity/`, e.g.
-
-```r
-data_path <- "<nav_study>/03_data/derivatives/navcity"
-ya <- read.csv(file.path(data_path, "ya_averaged_results.csv")) %>% select(-1)
-oa <- read.csv(file.path(data_path, "oa_averaged_results.csv")) %>% select(-1)
+```
+cd <nav_study>/04_code/navcity_analysis
+Rscript run_analysis.R ../../05_analyses/navcity_60subs              # everything (about 10 minutes)
+Rscript run_analysis.R ../../05_analyses/navcity_60subs figures      # only the figures
+Rscript run_analysis.R ../../05_analyses/navcity_60subs main_lmm     # only one 3_stats folder
 ```
 
-The NavAging paper's R scripts (`06_releases/paper_navaging/figure_creation/` and `stat_tests/`)
-are good starting points: **copy** them into `2_figures/` or `3_stats/`, change `data_path` (and
-the output path) and they read these tables unchanged. Never edit or save results inside
-`06_releases/`.
+The argument is an analysis folder in `05_analyses/`. It must contain `sample.tsv` (columns
+`participant_id`, `age_group`): the participants analysed. Everything the Rmds make goes into
+that folder's `output/`, and `output/run_log.tsv` lists which Rmds ran and why any failed. Each
+Rmd runs in its own fresh R session.
 
-Known issue: with ggplot2 4.x some of the paper's figure scripts stop with
-`geom_half_point()` / `gtable_add_grob()` errors. That comes from the R package versions, not
-the data (they fail the same way on the paper's own data).
+**Data** (`setup.R`, loaded by every Rmd): NavCity outcomes from `03_data/derivatives/navcity/`
+(only the participants in `sample.tsv` are kept as each table is read); NARA, cognitive scores and
+demographics from the NavAging paper's data, `06_releases/paper_navaging/data/` (read only).
+
+| Folder | Rmds | What |
+|---|---|---|
+| `2_figures/` | `1_`…`8_*.Rmd` | Raincloud, by-block and by-target plots; NavCity–NARA correlations; NARA plots; OA high/low NARA cohort plots |
+| `3_stats/main_lmm/` | `main_lmm_try.Rmd`, then `extract_pvalues_main.Rmd` | Age × block linear mixed models for each outcome; the p-value table for the figures (template: `pval_template_main.xlsx`) |
+| `3_stats/cohorts_lmm/` | `cohorts_lmm.Rmd`, then `extract_pvalues_cohorts.Rmd` | Same with three groups: YA, OA high NARA, OA low NARA |
+| `3_stats/corrs/` | `two_grp_corr_stats.Rmd` | Correlations between NavCity outcomes and NARA |
+| `3_stats/sensitivity/` | `sensitivity_analysis_teleport_dist_FINAL.Rmd` | Teleport distance with outliers removed |
+| `3_stats/nara/` | `1_` to `5_*.Rmd` | NARA scores: group statistics, the OA high/low cutoff (largest-gap method), age, young adults with low NARA |
+| `3_stats/demographics/` | `1_` to `5_*.Rmd` | Sample description and group comparisons |
+
+**These Rmds are the NavAging paper's** (copied from `06_releases/paper_navaging/`, 2026-11-11),
+changed only where needed to run here; every change is marked `# FIX` in the Rmd:
+
+- paths: data and outputs through `setup.R` / `run_analysis.R` instead of fixed drive paths;
+- ggplot2 4: the gghalves half-point layer (figures 1, 6, 7) replaced by `geom_point()` with
+  `position_jitter_left()` (in `setup.R`); gghalves is no longer maintained;
+- figure 3: the composite figure asked for `p_teleport_dt`, which did not exist (the paper's
+  composite failed; the single plots were fine);
+- figures 5–7, `nara/3_nara_age_stats.Rmd`, `demographics/1_gender_age_stats.Rmd`: they expected
+  `Group` as "YA"/"OA" and an `Age` (years) column, which the paper's frozen files do not have
+  (`Group` is 0 = YA / 1 = OA there); `label_paper_groups()` in `setup.R` adds both.
+
+**Still specific to the paper's 60 participants** (change before using them for another sample,
+e.g. `05_analyses/navcity_allsubs`):
+
+- the OA high / low NARA cutoff **3.5** is written into the Rmds (about 60 places; 3_stats/nara,
+  cohorts_lmm, sensitivity, demographics, figures 5–8). For another sample, calculate it with
+  `3_stats/nara/2_determine_nara_cohorts.Rmd` (largest gap between consecutive OA NARA scores)
+  and make it a setting of the analysis;
+- `3_stats/nara/4_ya_low_nara_nav_analysis.Rmd` and `5_low_nara_nonnav_analysis.Rmd` are about
+  two named young adults (BNC01, BNC037) with low NARA;
+- NARA and demographics come from the paper's files, which only cover these 60.
+
+Analyses that use this code:
+
+| Folder | What |
+|---|---|
+| `05_analyses/navcity_60subs` | The paper's 60 participants with the corrected outcomes; `RESULTS.md` compares with the paper |
+| `05_analyses/navcity_allsubs` | Planned: everyone tested so far |
+
+The paper's original R scripts, unchanged, are in `06_releases/paper_navaging/` (frozen: never
+edit or save results there). To run them as they were, use ggplot2 3.5 (see
+`06_releases/paper_navaging/REPRODUCE.md`).
 
 ---
 
@@ -245,7 +294,7 @@ the data (they fail the same way on the paper's own data).
 |---|---|
 | A participant is missing from the `ya_`/`oa_` files | Not all 3 blocks in rawdata (listed at the end of the run), or `incl_navcity_nara` is not 1, or no `age_group` in `participants.tsv`. Check `all_merged_results.csv` and the end of the run output. |
 | `unknown target codes` error | rawdata has a target this code does not know. Check the rawdata file; if it is a real target, add it to `TARGETS` in `metrics.py`. |
-| A participant was tested but has no rawdata | Rebuild rawdata (`04_code/rawdata/build_rawdata.py`); it prints what needs a decision. |
+| A participant was tested but has no rawdata | Rebuild rawdata (`04_code/build_rawdata/build_rawdata.py`); it prints what needs a decision. |
 | `Resource busy` (from these or other scripts) | The lab server refuses to replace a file that is open somewhere (another computer, an open window). The rawdata scripts work around it; for anything else, close the file elsewhere and try again. |
 | Numbers differ from the NavAging paper | Expected: errors in the paper's calculations were corrected (next section). |
 | Very slow | Normal on the network drive (large files). Running from a computer on the lab network is faster than over VPN. |
@@ -281,7 +330,9 @@ the paper's data and by how much (`--details` lists every value). It writes noth
 | `1_outcomes/metrics.py` | All calculations: `load_block` (read one rawdata file), `_target_metrics` (the outcomes of one target), `calculate_all_metrics` (all targets of a block), `summarise_blocks` (block means/sums), `missing_positions`. Also the target list (`TARGETS`), the start position and the outcome lists. |
 | `1_outcomes/visualization.py` | `--plots`: per-target position files and maps |
 | `1_outcomes/compare_to_frozen.py` | Comparison with the NavAging paper's data |
-| `2_figures/`, `3_stats/` | R Markdown scripts using the tables |
+| `run_analysis.R` | Runs `2_figures/` and `3_stats/` for one analysis folder |
+| `setup.R` | Loaded by every Rmd: data paths, the sample filter, and the fixes listed above |
+| `2_figures/*.Rmd`, `3_stats/*/*.Rmd` | Figures and statistics (see the table above) |
 
 ### History
 

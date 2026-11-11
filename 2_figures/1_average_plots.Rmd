@@ -1,0 +1,262 @@
+---
+title: "NavCity Outcomes Average Plots - Optimized"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r global-options, include=FALSE}
+source(file.path(Sys.getenv("NAVCITY_CODE"), "setup.R"), local = TRUE)   # data paths, sample filter, fixes
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r loading-libraries, include=FALSE}
+# Load required libraries for data analysis and visualization
+library(tidyverse)    # Data manipulation and ggplot2
+library(ggdist)       # Statistical distributions for ggplot2
+# library(gghalves)   # FIX: no longer needed (half-point layer replaced); does not work with ggplot2 4
+library(gridExtra)    # Arranging multiple plots
+library(scales)       # Scale formatting
+```
+
+```{r setup-paths, include=FALSE}
+# Define file paths - MODIFY THESE FOR YOUR SYSTEM
+data_path <- paper_data_path
+output_path <- file.path(Sys.getenv("ANALYSIS_ROOT"), "output", "figures")
+dir.create(output_path, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r load-and-process-data, include=FALSE}
+# Function to load and standardize data
+load_and_standardize <- function(file_path, age_group) {
+  # Read CSV file
+  data <- read.csv(file_path)
+  
+  # Add age group column
+  data$Age <- age_group
+  
+  # Remove first column (index) if it exists and convert Block_Num to factor
+  data <- data %>%
+    select(-1) %>%  # Remove first column (typically an index)
+    mutate(Block_Num = as.factor(Block_Num))
+  
+  return(data)
+}
+
+# Load both datasets
+ya_data <- load_and_standardize(file.path(navcity_path, "ya_averaged_results.csv"), "YA")
+oa_data <- load_and_standardize(file.path(navcity_path, "oa_averaged_results.csv"), "OA")
+
+# Combine datasets
+all_data <- bind_rows(ya_data, oa_data) %>%
+  mutate(Age = factor(Age, levels = c("YA", "OA")))
+
+# Calculate means across all three blocks for each participant
+# This replaces the inefficient for loop with vectorized operations
+mean_data <- all_data %>%
+  group_by(Participant, Age) %>%
+  summarise(
+    Total_Time = mean(Total_Time, na.rm = TRUE),
+    Orientation_Time = mean(Orientation_Time, na.rm = TRUE),
+    Navigation_Time = mean(Navigation_Time, na.rm = TRUE),
+    Distance = mean(Distance, na.rm = TRUE),
+    Speed = mean(Speed, na.rm = TRUE),
+    Mean_Dwell = mean(Mean_Dwell, na.rm = TRUE),
+    Teleportations = mean(Teleportations, na.rm = TRUE),
+    Mean_Teleport_Distance = mean(Mean_Teleport_Distance, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+print(paste("Loaded data for", nrow(mean_data), "participants"))
+print(paste("YA participants:", sum(mean_data$Age == "YA")))
+print(paste("OA participants:", sum(mean_data$Age == "OA")))
+```
+
+```{r plotting-function, include=FALSE}
+# Function to create standardized raincloud plots
+
+# This eliminates repetitive code and ensures consistency
+create_raincloud_plot <- function(data, y_var, y_label, y_limits = NULL, 
+                                 colors = c('#FF9FAF', '#5E7AFA')) {
+  
+  # Create base plot
+  p <- ggplot(data, aes(x = Age, y = .data[[y_var]], fill = Age, color = Age)) +
+    
+    # Set colors
+    scale_fill_manual(values = colors) +
+    scale_color_manual(values = colors) +
+    
+    # Format y-axis
+    scale_y_continuous(breaks = pretty_breaks(n = 4)) +
+    
+    # Set y-axis limits if provided
+    {if (!is.null(y_limits)) ylim(y_limits)} +
+    
+    # Labels and theme
+    labs(y = y_label, x = "") +
+    theme_classic() +
+    theme(
+      axis.line = element_line(linewidth = 0.5, colour = "#242526"),
+      axis.ticks = element_line(linewidth = 0.2, colour = "#242526"),
+      plot.title = element_text(hjust = 0.5),
+      legend.position = "none",
+      axis.text.x = element_text(size = 20),
+      axis.text.y = element_text(size = 20),
+      axis.title.y = element_text(size = 20)
+    ) +
+    
+    # Add half-violin (density plot)
+    stat_halfeye(
+      adjust = 0.5,           # Bandwidth adjustment
+      justification = -0.2,   # Move to the right
+      .width = 0,             # Remove interval
+      point_colour = NA,      # No point
+      scale = 0.5             # Scale the violin
+    ) +
+    
+    # Add boxplot
+    geom_boxplot(
+      width = 0.12,
+      outlier.color = NA,     # Remove outliers (shown as points instead)
+      alpha = 0.5
+    ) +
+    
+    # Add jittered points
+    geom_point(   # FIX: was the gghalves half-point layer (left side), which fails with ggplot2 4
+      alpha = 0.3,
+      position = position_jitter_left(width = 0.12)
+    )
+  
+  return(p)
+}
+
+# Function to save plots with consistent settings
+save_plot <- function(plot, filename, width = 5, height = 5) {
+  ggsave(
+    filename = file.path(output_path, paste0(filename, ".svg")),
+    plot = plot,
+    width = width,
+    height = height
+  )
+  cat("Saved:", filename, "\n")
+}
+```
+
+```{r create-individual-plots, include=FALSE}
+# Create all individual plots using the standardized function
+# Each plot is created with appropriate y-axis limits and labels
+
+# Total Time plot
+p_ct <- create_raincloud_plot(
+  mean_data, 
+  "Total_Time", 
+  "Average Total Time (s)",
+  y_limits = c(0, 168)
+)
+
+# Orientation Time plot  
+p_orict <- create_raincloud_plot(
+  mean_data, 
+  "Orientation_Time", 
+  "Average Orientation Time (s)"
+)
+
+# Navigation Time plot
+p_navct <- create_raincloud_plot(
+  mean_data, 
+  "Navigation_Time", 
+  "Average Navigation Time (s)",
+  y_limits = c(0, 168)
+)
+
+# Distance plot
+p_dt <- create_raincloud_plot(
+  mean_data, 
+  "Distance", 
+  "Average Distance Traveled (m)",
+  y_limits = c(0,900)
+)
+
+# Speed plot
+p_speed <- create_raincloud_plot(
+  mean_data, 
+  "Speed", 
+  "Average Speed (m/s)",
+  y_limits = c(0, 23)
+)
+
+# Dwell Time plot
+p_dwell <- create_raincloud_plot(
+  mean_data, 
+  "Mean_Dwell", 
+  "Average Dwell Duration (s)",
+  y_limits = c(0, 2.5)
+)
+
+# Teleportations plot
+p_teleport <- create_raincloud_plot(
+  mean_data, 
+  "Teleportations", 
+  "Average Teleportations (count)",
+  y_limits = c(0, 170)
+)
+
+# Mean Teleport Distance plot
+p_teleport_dt <- create_raincloud_plot(
+  mean_data, 
+  "Mean_Teleport_Distance", 
+  "Average Teleport Distance (m)",
+  y_limits = c(0, 7.5)
+)
+```
+
+```{r save-individual-plots, include=FALSE}
+# Save all individual plots
+save_plot(p_ct, "1_average_ct")
+save_plot(p_orict, "1_average_orict") 
+save_plot(p_navct, "1_average_navct")
+save_plot(p_dt, "1_average_dt")
+save_plot(p_speed, "1_average_speed")
+save_plot(p_dwell, "1_average_dwell")
+save_plot(p_teleport, "1_average_teleport")
+save_plot(p_teleport_dt, "1_average_teleport_dt")
+```
+
+```{r create-composite-figure, fig.height=20, fig.width=20, fig.align="center"}
+# Create composite figure with all plots arranged in a grid
+# 4 columns, 3 rows layout
+composite_plot <- grid.arrange(
+  p_speed, p_ct, p_orict, p_navct,           # Row 1
+  p_dt, p_dwell, p_teleport, p_teleport_dt, # Row 2
+  ncol = 4, 
+  nrow = 2
+)
+
+# Save composite figure
+save_plot(composite_plot, "1_average_composite", width = 20, height = 20)
+```
+
+```{r summary-statistics, include=FALSE}
+# Generate summary statistics for each measure by age group
+# This provides useful information about your data
+
+summary_stats <- mean_data %>%
+  pivot_longer(
+    cols = c(Total_Time, Orientation_Time, Navigation_Time, Distance, 
+             Speed, Mean_Dwell, Teleportations, Mean_Teleport_Distance),
+    names_to = "Measure",
+    values_to = "Value"
+  ) %>%
+  group_by(Age, Measure) %>%
+  summarise(
+    n = n(),
+    mean = round(mean(Value, na.rm = TRUE), 2),
+    sd = round(sd(Value, na.rm = TRUE), 2),
+    median = round(median(Value, na.rm = TRUE), 2),
+    min = round(min(Value, na.rm = TRUE), 2),
+    max = round(max(Value, na.rm = TRUE), 2),
+    .groups = 'drop'
+  )
+
+print("Summary statistics by age group and measure:")
+print(summary_stats)
+```

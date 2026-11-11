@@ -1,0 +1,307 @@
+---
+title: "NARA Scores: Age Correlation vs. Group-Based Analysis"
+author: "Analysis"
+date: "`r Sys.Date()`"
+output: html_document
+---
+```{r setup, include=FALSE}
+source(file.path(Sys.getenv("NAVCITY_CODE"), "setup.R"), local = TRUE)   # data paths, sample filter, fixes
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE, fig.width=10, fig.height=6)
+```
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(corrr)
+library(broom)
+library(gridExtra)
+library(viridis)
+library(cowplot)
+library(diptest)
+```
+
+```{r}
+# Load the non-navigation data
+# FIX: Group 0/1 -> "YA"/"OA" and Age (years) added; see setup.R
+# FIX: Group 0/1 -> "YA"/"OA" and Age (years) added; see setup.R
+non_nav_data <- label_paper_groups(label_paper_groups(read_csv(file.path(paper_data_path, "non_nav_data.csv"))))
+
+# Check the structure
+cat("Dataset dimensions:", dim(non_nav_data), "\n")
+cat("Age range:", range(non_nav_data$Age, na.rm = TRUE), "\n")
+cat("NARA range:", range(non_nav_data$NARA, na.rm = TRUE), "\n")
+cat("Groups:", unique(non_nav_data$Group), "\n")
+
+# Basic summary
+summary(non_nav_data[c("Age", "NARA", "Group")])
+```
+
+```{r}
+# Create the OA High/Low groupings with NARA cutoff of 3.5
+non_nav_data <- non_nav_data %>%
+  mutate(
+    NARA_Group = case_when(
+      Group == "YA" ~ "YA",
+      Group == "OA" & NARA >= 3.5 ~ "OA_High",
+      Group == "OA" & NARA < 3.5 ~ "OA_Low",
+      TRUE ~ NA_character_
+    )
+  )
+
+# Check the groupings
+table(non_nav_data$NARA_Group, useNA = "ifany")
+```
+
+# Analysis 1: Overall Age-NARA Correlation
+```{r}
+# Overall correlation between Age and NARA
+overall_cor <- cor.test(non_nav_data$Age, non_nav_data$NARA, method = "spearman")
+
+cat("Overall Age-NARA Correlation:\n")
+cat("Spearman's rho =", round(as.numeric(overall_cor$estimate), 3), "\n")
+cat("p-value =", round(overall_cor$p.value, 4), "\n\n")
+
+# Linear model
+age_nara_lm <- lm(NARA ~ Age, data = non_nav_data)
+summary(age_nara_lm)
+```
+
+# Analysis 2: Age-NARA Correlation Within Groups
+```{r}
+# Correlation within each group
+correlations_by_group <- non_nav_data %>%
+  group_by(Group) %>%
+  summarise(
+    n = n(),
+    cor_pearson = cor(Age, NARA, method = "pearson", use = "complete.obs"),
+    cor_spearman = cor(Age, NARA, method = "spearman", use = "complete.obs"),
+    .groups = 'drop'
+  )
+
+print(correlations_by_group)
+
+# Detailed correlation tests by group
+ya_cor <- with(filter(non_nav_data, Group == "YA"), 
+               cor.test(Age, NARA, method = "spearman"))
+oa_cor <- with(filter(non_nav_data, Group == "OA"), 
+               cor.test(Age, NARA, method = "spearman"))
+
+cat("\nYounger Adults (YA) Age-NARA Correlation:\n")
+cat("Spearman's rho =", round(as.numeric(ya_cor$estimate), 3), 
+    ", p =", round(ya_cor$p.value, 4), "\n")
+
+cat("\nOlder Adults (OA) Age-NARA Correlation:\n") 
+cat("Spearman's rho =", round(as.numeric(oa_cor$estimate), 3), 
+    ", p =", round(oa_cor$p.value, 4), "\n")
+```
+
+# Analysis 3: Age Distribution in OA High vs OA Low Groups
+```{r}
+# Focus on OA group only
+oa_data <- non_nav_data %>% 
+  filter(Group == "OA") %>%
+  filter(!is.na(NARA))  # Remove any NA values
+
+# Create a grouping variable with 3.5 cutoff
+oa_data <- oa_data %>%
+  mutate(NARA_Subgroup = ifelse(NARA >= 3.5, "OA_High", "OA_Low"))
+
+# Check that we have both groups
+cat("NARA subgroup counts:\n")
+table(oa_data$NARA_Subgroup)
+cat("\n")
+
+# Test if age differs between OA High and OA Low
+age_comparison <- wilcox.test(Age ~ NARA_Subgroup, data = oa_data)
+
+cat("Age comparison between OA High (NARA ≥ 3.5) vs OA Low (NARA < 3.5):\n")
+cat("Mann-Whitney U test: W =", age_comparison$statistic, ", p =", round(age_comparison$p.value, 4), "\n\n")
+
+# Summary statistics
+age_by_nara_group <- oa_data %>%
+  group_by(NARA_Subgroup) %>%
+  summarise(
+    n = n(),
+    age_median = median(Age),
+    age_iqr_lower = quantile(Age, 0.25),
+    age_iqr_upper = quantile(Age, 0.75),
+    age_mean = mean(Age),
+    age_sd = sd(Age),
+    .groups = 'drop'
+  )
+
+print(age_by_nara_group)
+```
+# Analysis 3b: Age-NARA Correlation Within OA Subgroups
+```{r}
+# Correlation within OA High and OA Low subgroups
+correlations_by_oa_subgroup <- oa_data %>%
+  group_by(NARA_Subgroup) %>%
+  summarise(
+    n = n(),
+    cor_pearson = cor(Age, NARA, method = "pearson", use = "complete.obs"),
+    cor_spearman = cor(Age, NARA, method = "spearman", use = "complete.obs"),
+    .groups = 'drop'
+  )
+
+print(correlations_by_oa_subgroup)
+
+# Detailed correlation tests by OA subgroup
+oa_high_cor <- with(filter(oa_data, NARA_Subgroup == "OA_High"), 
+                    cor.test(Age, NARA, method = "spearman"))
+oa_low_cor <- with(filter(oa_data, NARA_Subgroup == "OA_Low"), 
+                   cor.test(Age, NARA, method = "spearman"))
+
+cat("\nOA High (NARA ≥ 3.5) Age-NARA Correlation:\n")
+cat("Spearman's rho =", round(as.numeric(oa_high_cor$estimate), 3), 
+    ", p =", round(oa_high_cor$p.value, 4), "\n")
+cat("n =", sum(oa_data$NARA_Subgroup == "OA_High"), "\n")
+
+cat("\nOA Low (NARA < 3.5) Age-NARA Correlation:\n") 
+cat("Spearman's rho =", round(as.numeric(oa_low_cor$estimate), 3), 
+    ", p =", round(oa_low_cor$p.value, 4), "\n")
+cat("n =", sum(oa_data$NARA_Subgroup == "OA_Low"), "\n")
+```
+
+
+# Visualization: Age vs NARA Relationship
+```{r}
+# Create comprehensive visualization
+p1 <- ggplot(non_nav_data, aes(x = Age, y = NARA, color = Group)) +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, alpha = 0.2) +
+  scale_color_manual(values = c("YA" = "#FF6B6B", "OA" = "#4ECDC4")) +
+  labs(title = "Age vs NARA Scores by Group",
+       subtitle = paste0("Overall correlation: r = ", round(as.numeric(overall_cor$estimate), 3), 
+                        ", p = ", round(overall_cor$p.value, 4)),
+       x = "Age (years)", y = "NARA Score") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+# Separate plot for OA group only showing the bimodal split
+p2 <- ggplot(oa_data, aes(x = Age, y = NARA)) +
+  geom_point(aes(color = NARA >= 3.5), size = 3, alpha = 0.7) +
+  geom_hline(yintercept = 3.5, linetype = "dashed", color = "black", alpha = 0.5) +
+  geom_smooth(method = "lm", se = TRUE, color = "darkblue", alpha = 0.3) +
+  scale_color_manual(values = c("TRUE" = "#2E86AB", "FALSE" = "#A23B72"),
+                     name = "NARA Group", labels = c("OA Low (<3.5)", "OA High (≥3.5)")) +
+  labs(title = "Age vs NARA in Older Adults Only",
+       subtitle = paste0("OA correlation: r = ", round(as.numeric(oa_cor$estimate), 3), 
+                        ", p = ", round(oa_cor$p.value, 4)),
+       x = "Age (years)", y = "NARA Score") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+# Age distributions by NARA grouping
+p3 <- non_nav_data %>%
+  filter(!is.na(NARA_Group)) %>%
+  ggplot(aes(x = NARA_Group, y = Age, fill = NARA_Group)) +
+  geom_violin(alpha = 0.7) +
+  geom_boxplot(width = 0.2, fill = "white", alpha = 0.8) +
+  geom_jitter(width = 0.1, alpha = 0.6) +
+  scale_fill_manual(values = c("YA" = "#FF6B6B", "OA_High" = "#2E86AB", "OA_Low" = "#A23B72")) +
+  labs(title = "Age Distribution by NARA Groups",
+       x = "NARA Group", y = "Age (years)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# NARA distributions 
+p4 <- non_nav_data %>%
+  filter(!is.na(NARA_Group)) %>%
+  ggplot(aes(x = NARA_Group, y = NARA, fill = NARA_Group)) +
+  geom_violin(alpha = 0.7) +
+  geom_boxplot(width = 0.2, fill = "white", alpha = 0.8) +
+  geom_jitter(width = 0.1, alpha = 0.6) +
+  scale_fill_manual(values = c("YA" = "#FF6B6B", "OA_High" = "#2E86AB", "OA_Low" = "#A23B72")) +
+  labs(title = "NARA Score Distribution by Groups",
+       x = "NARA Group", y = "NARA Score") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Combine plots
+plot_grid(p1, p2, p3, p4, nrow = 2, ncol = 2, labels = c("A", "B", "C", "D"))
+```
+
+# Analysis 4: Model Comparison - Age vs. Grouping Approach
+```{r}
+# For this analysis, we'll use just the OA data to see which approach better explains NARA variance
+
+# Model 1: NARA predicted by age alone (in OA group)
+model_age <- lm(NARA ~ Age, data = oa_data)
+
+# Model 2: NARA predicted by high/low grouping (using age to create groups)
+# We'll use a different approach - create age tertiles and see if they predict NARA as well as the 3.5-cutoff
+oa_data_analysis <- oa_data %>%
+  mutate(
+    age_tertile = ntile(Age, 3),
+    age_median_split = ifelse(Age >= median(Age), "Older_OA", "Younger_OA"),
+    nara_binary = ifelse(NARA >= 3.5, 1, 0)
+  )
+
+# Logistic regression: can age predict NARA high/low status?
+model_age_predicts_nara <- glm(nara_binary ~ Age, data = oa_data_analysis, family = binomial)
+
+# Summary of age-based prediction of NARA grouping
+cat("Can age predict NARA High/Low status in OAs?\n")
+summary(model_age_predicts_nara)
+
+# Calculate pseudo R-squared (McFadden's)
+null_model <- glm(nara_binary ~ 1, data = oa_data_analysis, family = binomial)
+pseudo_r2 <- 1 - (logLik(model_age_predicts_nara) / logLik(null_model))
+cat("\nPseudo R-squared (McFadden's):", round(as.numeric(pseudo_r2), 4), "\n")
+
+# Test if age differs significantly between NARA groups
+age_diff_test <- t.test(Age ~ nara_binary, data = oa_data_analysis)
+cat("\nAge difference between NARA High vs Low:\n")
+cat("t-test: t =", round(age_diff_test$statistic, 3), ", p =", round(age_diff_test$p.value, 4), "\n")
+cat("Mean ages: NARA Low =", round(age_diff_test$estimate[1], 1), 
+    ", NARA High =", round(age_diff_test$estimate[2], 1), "\n")
+```
+
+# Summary & Conclusions
+```{r}
+cat("=== SUMMARY OF FINDINGS ===\n\n")
+
+cat("1. OVERALL AGE-NARA CORRELATION:\n")
+cat("   - Spearman's rho =", round(as.numeric(overall_cor$estimate), 3), "(p =", round(overall_cor$p.value, 4), ")\n")
+cat("   - This suggests", ifelse(overall_cor$p.value < 0.05, "significant", "non-significant"), 
+    "correlation between age and NARA\n\n")
+
+cat("2. WITHIN-GROUP CORRELATIONS:\n")
+cat("   - YA group: rho =", round(as.numeric(ya_cor$estimate), 3), "(p =", round(ya_cor$p.value, 4), ")\n")
+cat("   - OA group: rho =", round(as.numeric(oa_cor$estimate), 3), "(p =", round(oa_cor$p.value, 4), ")\n\n")
+
+cat("3. AGE DIFFERENCES BETWEEN OA HIGH/LOW GROUPS (NARA cutoff = 3.5):\n")
+cat("   - Mann-Whitney U test: p =", round(age_comparison$p.value, 4), "\n")
+cat("   - This suggests age does", ifelse(age_comparison$p.value < 0.05, "", " NOT"), 
+    "differ significantly between NARA High/Low groups\n\n")
+
+cat("4. AGE-NARA CORRELATIONS WITHIN OA SUBGROUPS:\n")
+cat("   - OA High: rho =", round(as.numeric(oa_high_cor$estimate), 3), "(p =", round(oa_high_cor$p.value, 4), ")\n")
+cat("   - OA Low: rho =", round(as.numeric(oa_low_cor$estimate), 3), "(p =", round(oa_low_cor$p.value, 4), ")\n")
+cat("   - Neither subgroup shows significant age-NARA correlation\n\n")
+
+cat("5. PREDICTIVE POWER OF AGE FOR NARA GROUPING:\n")
+cat("   - Pseudo R-squared =", round(as.numeric(pseudo_r2), 4), "\n")
+cat("   - This indicates age explains", round(as.numeric(pseudo_r2) * 100, 1), 
+    "% of variance in NARA High/Low classification\n\n")
+
+# Final interpretation
+if (overall_cor$p.value < 0.05 & oa_cor$p.value > 0.05 & age_comparison$p.value > 0.05) {
+  cat("INTERPRETATION:\n")
+  cat("The significant overall correlation appears driven by group differences (YA vs OA)\n")
+  cat("rather than continuous age effects. Within the OA group, age does not significantly\n")
+  cat("correlate with NARA scores, and OA High/Low groups do not differ significantly in age.\n")
+  cat("Furthermore, when examining OA High and OA Low separately, neither subgroup shows\n")
+  cat("significant age-NARA correlations, supporting your bimodal grouping approach over\n")
+  cat("a simple age-based explanation.\n")
+} else if (oa_cor$p.value < 0.05) {
+  cat("INTERPRETATION:\n")
+  cat("Age appears to be significantly correlated with NARA scores even within the OA group.\n")
+  cat("This suggests that the NARA differences might be partially explained by age effects\n")
+  cat("rather than representing distinct cognitive profiles.\n")
+} else {
+  cat("INTERPRETATION:\n")
+  cat("The relationship between age and NARA is complex and warrants further investigation.\n")
+}
+```

@@ -1,0 +1,1820 @@
+---
+title: "NavCity Demographic and Cognitive Correlates Analysis - Three Groups"
+author: "Your Name"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+  pdf_document:
+    latex_engine: xelatex
+    keep_tex: true
+---
+
+```{r setup, include=FALSE}
+source(file.path(Sys.getenv("NAVCITY_CODE"), "setup.R"), local = TRUE)   # data paths, sample filter, fixes
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Load Required Libraries
+
+```{r libraries}
+library(tidyverse)
+library(broom)
+library(knitr)
+library(kableExtra)
+library(reshape2)
+library(car)
+library(rstatix)    # For Games-Howell and other post-hoc tests
+library(FSA)        # For Dunn's test
+library(effectsize) # For effect size calculations
+```
+
+# Data Import and Preparation
+
+```{r import-data}
+# Load all data files
+demographic_data <- read_csv(file.path(paper_data_path, "demographic_data.csv"))
+non_nav <- read_csv(file.path(paper_data_path, "non_nav_data.csv"))
+ya_nav <- read_csv(file.path(navcity_path, "ya_averaged_results.csv"))
+oa_nav <- read_csv(file.path(navcity_path, "oa_averaged_results.csv"))
+
+# Combine YA and OA navigation data
+nav_data <- bind_rows(
+  ya_nav %>% mutate(Group = "YA"),
+  oa_nav %>% mutate(Group = "OA")
+)
+
+# Average navigation metrics across all blocks for each participant
+nav_averaged <- nav_data %>%
+  group_by(Participant, Group) %>%
+  summarise(
+    Mean_Speed = mean(Speed, na.rm = TRUE),
+    Mean_Distance = mean(Distance, na.rm = TRUE),
+    Mean_Navigation_Time = mean(Navigation_Time, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Merge all datasets
+merged_temp <- demographic_data %>%
+  full_join(non_nav, by = "Participant", suffix = c("_demo", "_non_nav")) %>%
+  mutate(Group = coalesce(Group_non_nav, 
+                          if_else(Group_demo == 1, "YA", "OA"))) %>%
+  select(-Group_demo, -Group_non_nav)
+
+merged_data <- merged_temp %>%
+  left_join(nav_averaged, by = c("Participant", "Group"))
+
+# Calculate change scores
+merged_data <- merged_data %>%
+  mutate(
+    SSS_Diff = SSS_Post - SSS_Pre,
+    SSQ_Diff = SSQ_Post - SSQ_Pre
+  )
+
+# CREATE THREE-GROUP VARIABLE
+# Define your criteria for splitting OA into High and Low
+# Example: Split by median NARA score (or your preferred measure)
+oa_data <- merged_data %>% filter(Group == "OA")
+nara_median <- median(oa_data$NARA, na.rm = TRUE)
+
+merged_data <- merged_data %>%
+  mutate(Group_3Level = case_when(
+    Group == "YA" ~ "YA",
+    Group == "OA" & NARA >= nara_median ~ "OA_High",
+    Group == "OA" & NARA < nara_median ~ "OA_Low",
+    TRUE ~ NA_character_
+  ))
+
+# Convert to factor with proper ordering
+merged_data$Group_3Level <- factor(merged_data$Group_3Level, 
+                                    levels = c("YA", "OA_High", "OA_Low"))
+
+# Display sample of merged data
+cat("Total participants:", nrow(merged_data), "\n")
+cat("YA participants:", sum(merged_data$Group_3Level == "YA", na.rm = TRUE), "\n")
+cat("OA_High participants:", sum(merged_data$Group_3Level == "OA_High", na.rm = TRUE), "\n")
+cat("OA_Low participants:", sum(merged_data$Group_3Level == "OA_Low", na.rm = TRUE), "\n\n")
+
+head(merged_data) %>% 
+  select(Participant, Group_3Level, Gender, Handedness, SBSOD, Mean_Speed) %>%
+  kable() %>% 
+  kable_styling()
+```
+
+# Part 1: Group Comparisons (YA vs. OA_High vs. OA_Low)
+
+## Test 1: Gender Distribution
+
+```{r test-1-gender}
+# Create contingency table
+gender_table <- table(merged_data$Gender, merged_data$Group_3Level)
+
+cat("Contingency Table:\n")
+print(gender_table)
+cat("\n")
+
+# Add row and column totals for clarity
+gender_table_with_totals <- addmargins(gender_table)
+cat("With Totals:\n")
+print(gender_table_with_totals)
+cat("\n")
+
+# Calculate proportions within each group
+cat("Proportions by Group:\n")
+prop_table <- prop.table(gender_table, margin = 2)
+print(round(prop_table, 3))
+cat("\n")
+
+# Perform chi-square test (without Yates' continuity correction)
+chi_test <- chisq.test(gender_table, correct = FALSE)
+
+cat("Chi-Square Test Results:\n")
+cat("χ² =", chi_test$statistic, "\n")
+cat("df =", chi_test$parameter, "\n")
+cat("p-value =", chi_test$p.value, "\n")
+
+# Check expected frequencies
+cat("\nExpected Frequencies:\n")
+print(round(chi_test$expected, 2))
+cat("\n")
+
+# Calculate effect size (Cramér's V)
+n <- sum(gender_table)
+min_dim <- min(nrow(gender_table) - 1, ncol(gender_table) - 1)
+cramers_v <- sqrt(chi_test$statistic / (n * min_dim))
+cat("Cramér's V =", round(cramers_v, 3), "\n")
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(chi_test$p.value < 0.05) {
+  cat("Result: SIGNIFICANT difference in gender distribution across groups (p < 0.05)\n")
+} else {
+  cat("Result: NO significant difference in gender distribution across groups (p >= 0.05)\n")
+}
+
+# Check assumption
+if(min(chi_test$expected) < 5) {
+  cat("⚠️  WARNING: Some expected frequencies < 5. Consider Fisher's exact test or combining categories.\n")
+}
+```
+
+## Test 2: Handedness Distribution
+
+```{r test-2-handedness}
+# Create collapsed category: Right vs. Non-Right
+merged_data <- merged_data %>%
+  mutate(Handedness_Collapsed = ifelse(Handedness == "R", "Right-handed", "Non-right-handed"))
+
+# Create contingency table
+handedness_table <- table(merged_data$Handedness_Collapsed, merged_data$Group_3Level)
+
+cat("Collapsed Contingency Table (Right vs. Non-Right):\n")
+print(handedness_table)
+cat("\n")
+
+# Add row and column totals
+handedness_table_with_totals <- addmargins(handedness_table)
+cat("With Totals:\n")
+print(handedness_table_with_totals)
+cat("\n")
+
+# Calculate proportions within each group
+cat("Proportions by Group:\n")
+prop_table <- prop.table(handedness_table, margin = 2)
+print(round(prop_table, 3))
+cat("\n")
+
+# Perform chi-square test
+chi_test <- chisq.test(handedness_table, correct = FALSE)
+
+cat("Chi-Square Test Results:\n")
+cat("χ² =", chi_test$statistic, "\n")
+cat("df =", chi_test$parameter, "\n")
+cat("p-value =", chi_test$p.value, "\n")
+
+# Check expected frequencies
+cat("\nExpected Frequencies:\n")
+print(round(chi_test$expected, 2))
+cat("\n")
+
+# Calculate effect size
+n <- sum(handedness_table)
+min_dim <- min(nrow(handedness_table) - 1, ncol(handedness_table) - 1)
+cramers_v <- sqrt(chi_test$statistic / (n * min_dim))
+cat("Cramér's V =", round(cramers_v, 3), "\n")
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(chi_test$p.value < 0.05) {
+  cat("Result: SIGNIFICANT difference in handedness distribution across groups (p < 0.05)\n")
+} else {
+  cat("Result: NO significant difference in handedness distribution across groups (p >= 0.05)\n")
+}
+
+if(min(chi_test$expected) < 5) {
+  cat("⚠️  WARNING: Some expected frequencies < 5.\n")
+}
+```
+
+## Test 3: Prior VR Experience Distribution
+
+```{r test-3-vr-experience}
+cat("VR Experience: Prior VR Exposure\n")
+cat("Note: Ordinal scale (0 = never, 1 = 1-3 times, 2 = >3 times)\n")
+cat("Analysis: Kruskal-Wallis test (appropriate for ordinal data with 3 groups)\n\n")
+
+# Summary statistics by group
+vr_summary <- merged_data %>%
+  group_by(Group_3Level) %>%
+  summarise(
+    n = sum(!is.na(VR_Experience_Quantified)),
+    Median = median(VR_Experience_Quantified, na.rm = TRUE),
+    Q1 = quantile(VR_Experience_Quantified, 0.25, na.rm = TRUE),
+    Q3 = quantile(VR_Experience_Quantified, 0.75, na.rm = TRUE),
+    Mean = mean(VR_Experience_Quantified, na.rm = TRUE),
+    SD = sd(VR_Experience_Quantified, na.rm = TRUE),
+    Min = min(VR_Experience_Quantified, na.rm = TRUE),
+    Max = max(VR_Experience_Quantified, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(vr_summary)
+cat("\n")
+
+# Filter out NA values for testing
+vr_data_clean <- merged_data %>%
+  filter(!is.na(VR_Experience_Quantified), !is.na(Group_3Level))
+
+# Kruskal-Wallis test
+kw_test <- kruskal.test(VR_Experience_Quantified ~ Group_3Level, data = vr_data_clean)
+
+cat("Kruskal-Wallis Test Results:\n")
+cat("H statistic =", kw_test$statistic, "\n")
+cat("df =", kw_test$parameter, "\n")
+cat("p-value =", kw_test$p.value, "\n")
+
+# Effect size (epsilon-squared)
+epsilon_sq <- kw_test$statistic / ((nrow(vr_data_clean)^2 - 1) / (nrow(vr_data_clean) + 1))
+cat("Epsilon-squared =", round(epsilon_sq, 3), "\n\n")
+
+# Post-hoc: Dunn's test with Holm correction
+if(kw_test$p.value < 0.05) {
+  cat("Post-hoc Comparisons (Dunn's test with Holm correction):\n")
+  dunn_results <- dunnTest(VR_Experience_Quantified ~ Group_3Level, 
+                           data = vr_data_clean, method = "holm")
+  print(dunn_results$res)
+  cat("\n")
+}
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(kw_test$p.value < 0.05) {
+  cat("Result: SIGNIFICANT difference in VR experience across groups (p < 0.05)\n")
+  cat("See post-hoc tests above for pairwise comparisons\n")
+} else {
+  cat("Result: NO significant difference in VR experience across groups (p >= 0.05)\n")
+}
+```
+
+## Test 4: Weekly Video Game Usage
+
+```{r test-4-video-games}
+cat("Video Game Usage (numeric variable)\n\n")
+
+# Summary statistics by group
+vg_summary <- merged_data %>%
+  group_by(Group_3Level) %>%
+  summarise(
+    n = sum(!is.na(Video_Game_Experience_Quantified)),
+    Mean = mean(Video_Game_Experience_Quantified, na.rm = TRUE),
+    SD = sd(Video_Game_Experience_Quantified, na.rm = TRUE),
+    Median = median(Video_Game_Experience_Quantified, na.rm = TRUE),
+    Q1 = quantile(Video_Game_Experience_Quantified, 0.25, na.rm = TRUE),
+    Q3 = quantile(Video_Game_Experience_Quantified, 0.75, na.rm = TRUE),
+    Min = min(Video_Game_Experience_Quantified, na.rm = TRUE),
+    Max = max(Video_Game_Experience_Quantified, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(vg_summary)
+cat("\n")
+
+# Filter out NA values for testing
+vg_data_clean <- merged_data %>%
+  filter(!is.na(Video_Game_Experience_Quantified), !is.na(Group_3Level))
+
+# Check normality for all groups
+cat("Normality Tests (Shapiro-Wilk):\n")
+for(grp in levels(vg_data_clean$Group_3Level)) {
+  data_subset <- vg_data_clean %>% filter(Group_3Level == grp) %>% 
+    pull(Video_Game_Experience_Quantified)
+  shapiro_result <- shapiro.test(data_subset)
+  cat(grp, ": W =", round(shapiro_result$statistic, 4), ", p =", shapiro_result$p.value)
+  if(shapiro_result$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+  cat("\n")
+}
+cat("\n")
+
+# Check homogeneity of variance
+levene_test <- leveneTest(Video_Game_Experience_Quantified ~ Group_3Level, 
+                          data = vg_data_clean)
+cat("Levene's Test for Homogeneity of Variance:\n")
+cat("F =", round(levene_test$`F value`[1], 4), ", p =", levene_test$`Pr(>F)`[1])
+if(levene_test$`Pr(>F)`[1] < 0.05) cat(" (variances unequal)") else cat(" (variances equal)")
+cat("\n\n")
+
+# Decide which test to use
+use_welch <- levene_test$`Pr(>F)`[1] < 0.05
+normality_check <- vg_data_clean %>%
+  group_by(Group_3Level) %>%
+  summarise(p_val = shapiro.test(Video_Game_Experience_Quantified)$p.value) %>%
+  pull(p_val)
+use_nonparametric <- any(normality_check < 0.05)
+
+if(use_nonparametric) {
+  cat("⚠️  Data violates normality assumption. Using Kruskal-Wallis test.\n\n")
+  kw_test <- kruskal.test(Video_Game_Experience_Quantified ~ Group_3Level, 
+                          data = vg_data_clean)
+  cat("Kruskal-Wallis Test Results:\n")
+  cat("H statistic =", kw_test$statistic, "\n")
+  cat("df =", kw_test$parameter, "\n")
+  cat("p-value =", kw_test$p.value, "\n")
+  
+  # Effect size
+  epsilon_sq <- kw_test$statistic / ((nrow(vg_data_clean)^2 - 1) / 
+                                      (nrow(vg_data_clean) + 1))
+  cat("Epsilon-squared =", round(epsilon_sq, 3), "\n\n")
+  
+  p_value <- kw_test$p.value
+  
+  # Post-hoc tests
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Dunn's test with Holm correction):\n")
+    dunn_results <- dunnTest(Video_Game_Experience_Quantified ~ Group_3Level, 
+                             data = vg_data_clean, method = "holm")
+    print(dunn_results$res)
+    cat("\n")
+  }
+  
+} else if(use_welch) {
+  cat("Variances are unequal. Using Welch's ANOVA.\n\n")
+  welch_anova <- oneway.test(Video_Game_Experience_Quantified ~ Group_3Level, 
+                             data = vg_data_clean, var.equal = FALSE)
+  cat("Welch's ANOVA Results:\n")
+  cat("F =", welch_anova$statistic, "\n")
+  cat("df1 =", welch_anova$parameter[1], ", df2 =", welch_anova$parameter[2], "\n")
+  cat("p-value =", welch_anova$p.value, "\n\n")
+  
+  p_value <- welch_anova$p.value
+  
+  # Post-hoc: Games-Howell
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Games-Howell):\n")
+    games_howell <- games_howell_test(vg_data_clean, 
+                                      Video_Game_Experience_Quantified ~ Group_3Level)
+    print(games_howell)
+    cat("\n")
+  }
+  
+} else {
+  cat("Assumptions met. Using standard one-way ANOVA.\n\n")
+  anova_model <- aov(Video_Game_Experience_Quantified ~ Group_3Level, 
+                     data = vg_data_clean)
+  anova_summary <- summary(anova_model)
+  
+  cat("One-way ANOVA Results:\n")
+  print(anova_summary)
+  cat("\n")
+  
+  # Effect size (eta-squared)
+  eta_sq <- effectsize::eta_squared(anova_model)
+  cat("Eta-squared =", round(eta_sq$Eta2[1], 3), "\n\n")
+  
+  p_value <- anova_summary[[1]]$`Pr(>F)`[1]
+  
+  # Post-hoc: Tukey HSD
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Tukey HSD):\n")
+    tukey_results <- TukeyHSD(anova_model)
+    print(tukey_results)
+    cat("\n")
+  }
+}
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(p_value < 0.05) {
+  cat("Result: SIGNIFICANT difference in video game usage across groups (p < 0.05)\n")
+  cat("See post-hoc tests above for pairwise comparisons\n")
+} else {
+  cat("Result: NO significant difference in video game usage across groups (p >= 0.05)\n")
+}
+```
+
+## Test 5: Weekly Exercise Frequency
+
+```{r test-5-exercise}
+cat("Exercise Frequency (numeric variable)\n\n")
+
+# Summary statistics by group
+exercise_summary <- merged_data %>%
+  group_by(Group_3Level) %>%
+  summarise(
+    n = sum(!is.na(Exercise_Quantified)),
+    Mean = mean(Exercise_Quantified, na.rm = TRUE),
+    SD = sd(Exercise_Quantified, na.rm = TRUE),
+    Median = median(Exercise_Quantified, na.rm = TRUE),
+    Q1 = quantile(Exercise_Quantified, 0.25, na.rm = TRUE),
+    Q3 = quantile(Exercise_Quantified, 0.75, na.rm = TRUE),
+    Min = min(Exercise_Quantified, na.rm = TRUE),
+    Max = max(Exercise_Quantified, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(exercise_summary)
+cat("\n")
+
+# Filter out NA values for testing
+exercise_data_clean <- merged_data %>%
+  filter(!is.na(Exercise_Quantified), !is.na(Group_3Level))
+
+# Check normality
+cat("Normality Tests (Shapiro-Wilk):\n")
+for(grp in levels(exercise_data_clean$Group_3Level)) {
+  data_subset <- exercise_data_clean %>% filter(Group_3Level == grp) %>% 
+    pull(Exercise_Quantified)
+  shapiro_result <- shapiro.test(data_subset)
+  cat(grp, ": W =", round(shapiro_result$statistic, 4), ", p =", shapiro_result$p.value)
+  if(shapiro_result$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+  cat("\n")
+}
+cat("\n")
+
+# Check homogeneity of variance
+levene_test <- leveneTest(Exercise_Quantified ~ Group_3Level, data = exercise_data_clean)
+cat("Levene's Test for Homogeneity of Variance:\n")
+cat("F =", round(levene_test$`F value`[1], 4), ", p =", levene_test$`Pr(>F)`[1])
+if(levene_test$`Pr(>F)`[1] < 0.05) cat(" (variances unequal)") else cat(" (variances equal)")
+cat("\n\n")
+
+# Decide which test to use
+use_welch <- levene_test$`Pr(>F)`[1] < 0.05
+normality_check <- exercise_data_clean %>%
+  group_by(Group_3Level) %>%
+  summarise(p_val = shapiro.test(Exercise_Quantified)$p.value) %>%
+  pull(p_val)
+use_nonparametric <- any(normality_check < 0.05)
+
+if(use_nonparametric) {
+  cat("⚠️  Data violates normality assumption. Using Kruskal-Wallis test.\n\n")
+  kw_test <- kruskal.test(Exercise_Quantified ~ Group_3Level, data = exercise_data_clean)
+  cat("Kruskal-Wallis Test Results:\n")
+  cat("H statistic =", kw_test$statistic, "\n")
+  cat("df =", kw_test$parameter, "\n")
+  cat("p-value =", kw_test$p.value, "\n")
+  
+  epsilon_sq <- kw_test$statistic / ((nrow(exercise_data_clean)^2 - 1) / 
+                                      (nrow(exercise_data_clean) + 1))
+  cat("Epsilon-squared =", round(epsilon_sq, 3), "\n\n")
+  
+  p_value <- kw_test$p.value
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Dunn's test with Holm correction):\n")
+    dunn_results <- dunnTest(Exercise_Quantified ~ Group_3Level, 
+                             data = exercise_data_clean, method = "holm")
+    print(dunn_results$res)
+    cat("\n")
+  }
+  
+} else if(use_welch) {
+  cat("Variances are unequal. Using Welch's ANOVA.\n\n")
+  welch_anova <- oneway.test(Exercise_Quantified ~ Group_3Level, 
+                             data = exercise_data_clean, var.equal = FALSE)
+  cat("Welch's ANOVA Results:\n")
+  cat("F =", welch_anova$statistic, "\n")
+  cat("df1 =", welch_anova$parameter[1], ", df2 =", welch_anova$parameter[2], "\n")
+  cat("p-value =", welch_anova$p.value, "\n\n")
+  
+  p_value <- welch_anova$p.value
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Games-Howell):\n")
+    games_howell <- games_howell_test(exercise_data_clean, 
+                                      Exercise_Quantified ~ Group_3Level)
+    print(games_howell)
+    cat("\n")
+  }
+  
+} else {
+  cat("Assumptions met. Using standard one-way ANOVA.\n\n")
+  anova_model <- aov(Exercise_Quantified ~ Group_3Level, data = exercise_data_clean)
+  anova_summary <- summary(anova_model)
+  
+  cat("One-way ANOVA Results:\n")
+  print(anova_summary)
+  cat("\n")
+  
+  eta_sq <- effectsize::eta_squared(anova_model)
+  cat("Eta-squared =", round(eta_sq$Eta2[1], 3), "\n\n")
+  
+  p_value <- anova_summary[[1]]$`Pr(>F)`[1]
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Tukey HSD):\n")
+    tukey_results <- TukeyHSD(anova_model)
+    print(tukey_results)
+    cat("\n")
+  }
+}
+
+cat("\n--- INTERPRETATION ---\n")
+if(p_value < 0.05) {
+  cat("Result: SIGNIFICANT difference in exercise frequency across groups (p < 0.05)\n")
+  cat("See post-hoc tests above for pairwise comparisons\n")
+} else {
+  cat("Result: NO significant difference in exercise frequency across groups (p >= 0.05)\n")
+}
+```
+
+## Test 6: SBSOD Scores
+
+```{r test-6-sbsod}
+cat("SBSOD: Santa Barbara Sense of Direction Scale\n\n")
+
+# Summary statistics by group
+sbsod_summary <- merged_data %>%
+  group_by(Group_3Level) %>%
+  summarise(
+    n = sum(!is.na(SBSOD)),
+    Mean = mean(SBSOD, na.rm = TRUE),
+    SD = sd(SBSOD, na.rm = TRUE),
+    Median = median(SBSOD, na.rm = TRUE),
+    Q1 = quantile(SBSOD, 0.25, na.rm = TRUE),
+    Q3 = quantile(SBSOD, 0.75, na.rm = TRUE),
+    Min = min(SBSOD, na.rm = TRUE),
+    Max = max(SBSOD, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(sbsod_summary)
+cat("\n")
+
+# Filter out NA values for testing
+sbsod_data_clean <- merged_data %>%
+  filter(!is.na(SBSOD), !is.na(Group_3Level))
+
+# Check normality
+cat("Normality Tests (Shapiro-Wilk):\n")
+for(grp in levels(sbsod_data_clean$Group_3Level)) {
+  data_subset <- sbsod_data_clean %>% filter(Group_3Level == grp) %>% pull(SBSOD)
+  shapiro_result <- shapiro.test(data_subset)
+  cat(grp, ": W =", round(shapiro_result$statistic, 4), ", p =", shapiro_result$p.value)
+  if(shapiro_result$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+  cat("\n")
+}
+cat("\n")
+
+# Check homogeneity of variance
+levene_test <- leveneTest(SBSOD ~ Group_3Level, data = sbsod_data_clean)
+cat("Levene's Test for Homogeneity of Variance:\n")
+cat("F =", round(levene_test$`F value`[1], 4), ", p =", levene_test$`Pr(>F)`[1])
+if(levene_test$`Pr(>F)`[1] < 0.05) cat(" (variances unequal)") else cat(" (variances equal)")
+cat("\n\n")
+
+# Decide which test to use
+use_welch <- levene_test$`Pr(>F)`[1] < 0.05
+normality_check <- sbsod_data_clean %>%
+  group_by(Group_3Level) %>%
+  summarise(p_val = shapiro.test(SBSOD)$p.value) %>%
+  pull(p_val)
+use_nonparametric <- any(normality_check < 0.05)
+
+if(use_nonparametric) {
+  cat("⚠️  Data violates normality assumption. Using Kruskal-Wallis test.\n\n")
+  kw_test <- kruskal.test(SBSOD ~ Group_3Level, data = sbsod_data_clean)
+  cat("Kruskal-Wallis Test Results:\n")
+  cat("H statistic =", kw_test$statistic, "\n")
+  cat("df =", kw_test$parameter, "\n")
+  cat("p-value =", kw_test$p.value, "\n")
+  
+  epsilon_sq <- kw_test$statistic / ((nrow(sbsod_data_clean)^2 - 1) / 
+                                      (nrow(sbsod_data_clean) + 1))
+  cat("Epsilon-squared =", round(epsilon_sq, 3), "\n\n")
+  
+  p_value <- kw_test$p.value
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Dunn's test with Holm correction):\n")
+    dunn_results <- dunnTest(SBSOD ~ Group_3Level, data = sbsod_data_clean, method = "holm")
+    print(dunn_results$res)
+    cat("\n")
+  }
+  
+} else if(use_welch) {
+  cat("Variances are unequal. Using Welch's ANOVA.\n\n")
+  welch_anova <- oneway.test(SBSOD ~ Group_3Level, data = sbsod_data_clean, var.equal = FALSE)
+  cat("Welch's ANOVA Results:\n")
+  cat("F =", welch_anova$statistic, "\n")
+  cat("df1 =", welch_anova$parameter[1], ", df2 =", welch_anova$parameter[2], "\n")
+  cat("p-value =", welch_anova$p.value, "\n\n")
+  
+  p_value <- welch_anova$p.value
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Games-Howell):\n")
+    games_howell <- games_howell_test(sbsod_data_clean, SBSOD ~ Group_3Level)
+    print(games_howell)
+    cat("\n")
+  }
+  
+} else {
+  cat("Assumptions met. Using standard one-way ANOVA.\n\n")
+  anova_model <- aov(SBSOD ~ Group_3Level, data = sbsod_data_clean)
+  anova_summary <- summary(anova_model)
+  
+  cat("One-way ANOVA Results:\n")
+  print(anova_summary)
+  cat("\n")
+  
+  eta_sq <- effectsize::eta_squared(anova_model)
+  cat("Eta-squared =", round(eta_sq$Eta2[1], 3), "\n\n")
+  
+  p_value <- anova_summary[[1]]$`Pr(>F)`[1]
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Tukey HSD):\n")
+    tukey_results <- TukeyHSD(anova_model)
+    print(tukey_results)
+    cat("\n")
+  }
+}
+
+cat("\n--- INTERPRETATION ---\n")
+if(p_value < 0.05) {
+  cat("Result: SIGNIFICANT difference in SBSOD scores across groups (p < 0.05)\n")
+  cat("See post-hoc tests above for pairwise comparisons\n")
+} else {
+  cat("Result: NO significant difference in SBSOD scores across groups (p >= 0.05)\n")
+}
+```
+
+## Test 7: PSQI Scores
+
+```{r test-7-psqi}
+cat("PSQI: Pittsburgh Sleep Quality Index\n")
+cat("Note: Higher scores indicate WORSE sleep quality (range 0-21)\n\n")
+
+# Summary statistics by group
+psqi_summary <- merged_data %>%
+  group_by(Group_3Level) %>%
+  summarise(
+    n = sum(!is.na(PSQI)),
+    Mean = mean(PSQI, na.rm = TRUE),
+    SD = sd(PSQI, na.rm = TRUE),
+    Median = median(PSQI, na.rm = TRUE),
+    Q1 = quantile(PSQI, 0.25, na.rm = TRUE),
+    Q3 = quantile(PSQI, 0.75, na.rm = TRUE),
+    Min = min(PSQI, na.rm = TRUE),
+    Max = max(PSQI, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(psqi_summary)
+cat("\n")
+
+# Filter out NA values for testing
+psqi_data_clean <- merged_data %>%
+  filter(!is.na(PSQI), !is.na(Group_3Level))
+
+# Check normality
+cat("Normality Tests (Shapiro-Wilk):\n")
+for(grp in levels(psqi_data_clean$Group_3Level)) {
+  data_subset <- psqi_data_clean %>% filter(Group_3Level == grp) %>% pull(PSQI)
+  shapiro_result <- shapiro.test(data_subset)
+  cat(grp, ": W =", round(shapiro_result$statistic, 4), ", p =", shapiro_result$p.value)
+  if(shapiro_result$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+  cat("\n")
+}
+cat("\n")
+
+# Check homogeneity of variance
+levene_test <- leveneTest(PSQI ~ Group_3Level, data = psqi_data_clean)
+cat("Levene's Test for Homogeneity of Variance:\n")
+cat("F =", round(levene_test$`F value`[1], 4), ", p =", levene_test$`Pr(>F)`[1])
+if(levene_test$`Pr(>F)`[1] < 0.05) cat(" (variances unequal)") else cat(" (variances equal)")
+cat("\n\n")
+
+# Decide which test to use
+use_welch <- levene_test$`Pr(>F)`[1] < 0.05
+normality_check <- psqi_data_clean %>%
+  group_by(Group_3Level) %>%
+  summarise(p_val = shapiro.test(PSQI)$p.value) %>%
+  pull(p_val)
+use_nonparametric <- any(normality_check < 0.05)
+
+if(use_nonparametric) {
+  cat("⚠️  Data violates normality assumption. Using Kruskal-Wallis test.\n\n")
+  kw_test <- kruskal.test(PSQI ~ Group_3Level, data = psqi_data_clean)
+  cat("Kruskal-Wallis Test Results:\n")
+  cat("H statistic =", kw_test$statistic, "\n")
+  cat("df =", kw_test$parameter, "\n")
+  cat("p-value =", kw_test$p.value, "\n")
+  
+  epsilon_sq <- kw_test$statistic / ((nrow(psqi_data_clean)^2 - 1) / 
+                                      (nrow(psqi_data_clean) + 1))
+  cat("Epsilon-squared =", round(epsilon_sq, 3), "\n\n")
+  
+  p_value <- kw_test$p.value
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Dunn's test with Holm correction):\n")
+    dunn_results <- dunnTest(PSQI ~ Group_3Level, data = psqi_data_clean, method = "holm")
+    print(dunn_results$res)
+    cat("\n")
+  }
+  
+} else if(use_welch) {
+  cat("Variances are unequal. Using Welch's ANOVA.\n\n")
+  welch_anova <- oneway.test(PSQI ~ Group_3Level, data = psqi_data_clean, var.equal = FALSE)
+  cat("Welch's ANOVA Results:\n")
+  cat("F =", welch_anova$statistic, "\n")
+  cat("df1 =", welch_anova$parameter[1], ", df2 =", welch_anova$parameter[2], "\n")
+  cat("p-value =", welch_anova$p.value, "\n\n")
+  
+  p_value <- welch_anova$p.value
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Games-Howell):\n")
+    games_howell <- games_howell_test(psqi_data_clean, PSQI ~ Group_3Level)
+    print(games_howell)
+    cat("\n")
+  }
+  
+} else {
+  cat("Assumptions met. Using standard one-way ANOVA.\n\n")
+  anova_model <- aov(PSQI ~ Group_3Level, data = psqi_data_clean)
+  anova_summary <- summary(anova_model)
+  
+  cat("One-way ANOVA Results:\n")
+  print(anova_summary)
+  cat("\n")
+  
+  eta_sq <- effectsize::eta_squared(anova_model)
+  cat("Eta-squared =", round(eta_sq$Eta2[1], 3), "\n\n")
+  
+  p_value <- anova_summary[[1]]$`Pr(>F)`[1]
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Tukey HSD):\n")
+    tukey_results <- TukeyHSD(anova_model)
+    print(tukey_results)
+    cat("\n")
+  }
+}
+
+cat("\n--- INTERPRETATION ---\n")
+if(p_value < 0.05) {
+  cat("Result: SIGNIFICANT difference in sleep quality across groups (p < 0.05)\n")
+  cat("See post-hoc tests above for pairwise comparisons\n")
+} else {
+  cat("Result: NO significant difference in sleep quality across groups (p >= 0.05)\n")
+}
+```
+
+## Test 8: Trails A Completion Time
+
+```{r test-8-trails-a}
+cat("Trails A: Completion Time\n")
+cat("Note: Trail Making Test Part A measures processing speed\n\n")
+
+# Summary statistics by group
+trails_a_summary <- merged_data %>%
+  group_by(Group_3Level) %>%
+  summarise(
+    n = sum(!is.na(Trails_A_CT)),
+    Mean = mean(Trails_A_CT, na.rm = TRUE),
+    SD = sd(Trails_A_CT, na.rm = TRUE),
+    Median = median(Trails_A_CT, na.rm = TRUE),
+    Q1 = quantile(Trails_A_CT, 0.25, na.rm = TRUE),
+    Q3 = quantile(Trails_A_CT, 0.75, na.rm = TRUE),
+    Min = min(Trails_A_CT, na.rm = TRUE),
+    Max = max(Trails_A_CT, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(trails_a_summary)
+cat("\n")
+
+# Filter out NA values for testing
+trails_a_clean <- merged_data %>%
+  filter(!is.na(Trails_A_CT), !is.na(Group_3Level))
+
+# Check normality
+cat("Normality Tests (Shapiro-Wilk):\n")
+for(grp in levels(trails_a_clean$Group_3Level)) {
+  data_subset <- trails_a_clean %>% filter(Group_3Level == grp) %>% pull(Trails_A_CT)
+  shapiro_result <- shapiro.test(data_subset)
+  cat(grp, ": W =", round(shapiro_result$statistic, 4), ", p =", shapiro_result$p.value)
+  if(shapiro_result$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+  cat("\n")
+}
+cat("\n")
+
+# Check homogeneity of variance
+levene_test <- leveneTest(Trails_A_CT ~ Group_3Level, data = trails_a_clean)
+cat("Levene's Test for Homogeneity of Variance:\n")
+cat("F =", round(levene_test$`F value`[1], 4), ", p =", levene_test$`Pr(>F)`[1])
+if(levene_test$`Pr(>F)`[1] < 0.05) cat(" (variances unequal)") else cat(" (variances equal)")
+cat("\n\n")
+
+# Decide which test to use
+use_welch <- levene_test$`Pr(>F)`[1] < 0.05
+normality_check <- trails_a_clean %>%
+  group_by(Group_3Level) %>%
+  summarise(p_val = shapiro.test(Trails_A_CT)$p.value) %>%
+  pull(p_val)
+use_nonparametric <- any(normality_check < 0.05)
+
+if(use_nonparametric) {
+  cat("⚠️  Data violates normality assumption. Using Kruskal-Wallis test.\n\n")
+  kw_test <- kruskal.test(Trails_A_CT ~ Group_3Level, data = trails_a_clean)
+  cat("Kruskal-Wallis Test Results:\n")
+  cat("H statistic =", kw_test$statistic, "\n")
+  cat("df =", kw_test$parameter, "\n")
+  cat("p-value =", kw_test$p.value, "\n")
+  
+  epsilon_sq <- kw_test$statistic / ((nrow(trails_a_clean)^2 - 1) / (nrow(trails_a_clean) + 1))
+  cat("Epsilon-squared =", round(epsilon_sq, 3), "\n\n")
+  
+  p_value <- kw_test$p.value
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Dunn's test with Holm correction):\n")
+    dunn_results <- dunnTest(Trails_A_CT ~ Group_3Level, data = trails_a_clean, method = "holm")
+    print(dunn_results$res)
+    cat("\n")
+  }
+  
+} else if(use_welch) {
+  cat("Variances are unequal. Using Welch's ANOVA.\n\n")
+  welch_anova <- oneway.test(Trails_A_CT ~ Group_3Level, data = trails_a_clean, var.equal = FALSE)
+  cat("Welch's ANOVA Results:\n")
+  cat("F =", welch_anova$statistic, "\n")
+  cat("df1 =", welch_anova$parameter[1], ", df2 =", welch_anova$parameter[2], "\n")
+  cat("p-value =", welch_anova$p.value, "\n\n")
+  
+  p_value <- welch_anova$p.value
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Games-Howell):\n")
+    games_howell <- games_howell_test(trails_a_clean, Trails_A_CT ~ Group_3Level)
+    print(games_howell)
+    cat("\n")
+  }
+  
+} else {
+  cat("Assumptions met. Using standard one-way ANOVA.\n\n")
+  anova_model <- aov(Trails_A_CT ~ Group_3Level, data = trails_a_clean)
+  anova_summary <- summary(anova_model)
+  
+  cat("One-way ANOVA Results:\n")
+  print(anova_summary)
+  cat("\n")
+  
+  eta_sq <- effectsize::eta_squared(anova_model)
+  cat("Eta-squared =", round(eta_sq$Eta2[1], 3), "\n\n")
+  
+  p_value <- anova_summary[[1]]$`Pr(>F)`[1]
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Tukey HSD):\n")
+    tukey_results <- TukeyHSD(anova_model)
+    print(tukey_results)
+    cat("\n")
+  }
+}
+
+cat("\n--- INTERPRETATION ---\n")
+if(p_value < 0.05) {
+  cat("Result: SIGNIFICANT difference in Trails A completion time across groups (p < 0.05)\n")
+  cat("See post-hoc tests above for pairwise comparisons\n")
+} else {
+  cat("Result: NO significant difference in Trails A completion time across groups (p >= 0.05)\n")
+}
+```
+
+## Test 9: Trails B Completion Time
+
+```{r test-9-trails-b}
+cat("Trails B: Completion Time\n")
+cat("Note: Trail Making Test Part B measures executive function and cognitive flexibility\n\n")
+
+# Summary statistics by group
+trails_b_summary <- merged_data %>%
+  group_by(Group_3Level) %>%
+  summarise(
+    n = sum(!is.na(Trails_B_CT)),
+    Mean = mean(Trails_B_CT, na.rm = TRUE),
+    SD = sd(Trails_B_CT, na.rm = TRUE),
+    Median = median(Trails_B_CT, na.rm = TRUE),
+    Q1 = quantile(Trails_B_CT, 0.25, na.rm = TRUE),
+    Q3 = quantile(Trails_B_CT, 0.75, na.rm = TRUE),
+    Min = min(Trails_B_CT, na.rm = TRUE),
+    Max = max(Trails_B_CT, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(trails_b_summary)
+cat("\n")
+
+# Filter out NA values for testing
+trails_b_clean <- merged_data %>%
+  filter(!is.na(Trails_B_CT), !is.na(Group_3Level))
+
+# Check normality
+cat("Normality Tests (Shapiro-Wilk):\n")
+for(grp in levels(trails_b_clean$Group_3Level)) {
+  data_subset <- trails_b_clean %>% filter(Group_3Level == grp) %>% pull(Trails_B_CT)
+  shapiro_result <- shapiro.test(data_subset)
+  cat(grp, ": W =", round(shapiro_result$statistic, 4), ", p =", shapiro_result$p.value)
+  if(shapiro_result$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+  cat("\n")
+}
+cat("\n")
+
+# Check homogeneity of variance
+levene_test <- leveneTest(Trails_B_CT ~ Group_3Level, data = trails_b_clean)
+cat("Levene's Test for Homogeneity of Variance:\n")
+cat("F =", round(levene_test$`F value`[1], 4), ", p =", levene_test$`Pr(>F)`[1])
+if(levene_test$`Pr(>F)`[1] < 0.05) cat(" (variances unequal)") else cat(" (variances equal)")
+cat("\n\n")
+
+# Decide which test to use
+use_welch <- levene_test$`Pr(>F)`[1] < 0.05
+normality_check <- trails_b_clean %>%
+  group_by(Group_3Level) %>%
+  summarise(p_val = shapiro.test(Trails_B_CT)$p.value) %>%
+  pull(p_val)
+use_nonparametric <- any(normality_check < 0.05)
+
+if(use_nonparametric) {
+  cat("⚠️  Data violates normality assumption. Using Kruskal-Wallis test.\n\n")
+  kw_test <- kruskal.test(Trails_B_CT ~ Group_3Level, data = trails_b_clean)
+  cat("Kruskal-Wallis Test Results:\n")
+  cat("H statistic =", kw_test$statistic, "\n")
+  cat("df =", kw_test$parameter, "\n")
+  cat("p-value =", kw_test$p.value, "\n")
+  
+  epsilon_sq <- kw_test$statistic / ((nrow(trails_b_clean)^2 - 1) / (nrow(trails_b_clean) + 1))
+  cat("Epsilon-squared =", round(epsilon_sq, 3), "\n\n")
+  
+  p_value <- kw_test$p.value
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Dunn's test with Holm correction):\n")
+    dunn_results <- dunnTest(Trails_B_CT ~ Group_3Level, data = trails_b_clean, method = "holm")
+    print(dunn_results$res)
+    cat("\n")
+  }
+  
+} else if(use_welch) {
+  cat("Variances are unequal. Using Welch's ANOVA.\n\n")
+  welch_anova <- oneway.test(Trails_B_CT ~ Group_3Level, data = trails_b_clean, var.equal = FALSE)
+  cat("Welch's ANOVA Results:\n")
+  cat("F =", welch_anova$statistic, "\n")
+  cat("df1 =", welch_anova$parameter[1], ", df2 =", welch_anova$parameter[2], "\n")
+  cat("p-value =", welch_anova$p.value, "\n\n")
+  
+  p_value <- welch_anova$p.value
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Games-Howell):\n")
+    games_howell <- games_howell_test(trails_b_clean, Trails_B_CT ~ Group_3Level)
+    print(games_howell)
+    cat("\n")
+  }
+  
+} else {
+  cat("Assumptions met. Using standard one-way ANOVA.\n\n")
+  anova_model <- aov(Trails_B_CT ~ Group_3Level, data = trails_b_clean)
+  anova_summary <- summary(anova_model)
+  
+  cat("One-way ANOVA Results:\n")
+  print(anova_summary)
+  cat("\n")
+  
+  eta_sq <- effectsize::eta_squared(anova_model)
+  cat("Eta-squared =", round(eta_sq$Eta2[1], 3), "\n\n")
+  
+  p_value <- anova_summary[[1]]$`Pr(>F)`[1]
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Tukey HSD):\n")
+    tukey_results <- TukeyHSD(anova_model)
+    print(tukey_results)
+    cat("\n")
+  }
+}
+
+cat("\n--- INTERPRETATION ---\n")
+if(p_value < 0.05) {
+  cat("Result: SIGNIFICANT difference in Trails B completion time across groups (p < 0.05)\n")
+  cat("See post-hoc tests above for pairwise comparisons\n")
+} else {
+  cat("Result: NO significant difference in Trails B completion time across groups (p >= 0.05)\n")
+}
+```
+
+## Test 10: Trails B-A Difference
+
+```{r test-10-trails-ba-diff}
+cat("Trails B-A Difference\n")
+cat("Note: Difference score (Trails B - Trails A) isolates executive function component\n\n")
+
+# Calculate Trails_BA_Diff
+merged_data <- merged_data %>%
+  mutate(Trails_BA_Diff = Trails_B_CT - Trails_A_CT)
+
+# Summary statistics by group
+trails_ba_summary <- merged_data %>%
+  group_by(Group_3Level) %>%
+  summarise(
+    n = sum(!is.na(Trails_BA_Diff)),
+    Mean = mean(Trails_BA_Diff, na.rm = TRUE),
+    SD = sd(Trails_BA_Diff, na.rm = TRUE),
+    Median = median(Trails_BA_Diff, na.rm = TRUE),
+    Q1 = quantile(Trails_BA_Diff, 0.25, na.rm = TRUE),
+    Q3 = quantile(Trails_BA_Diff, 0.75, na.rm = TRUE),
+    Min = min(Trails_BA_Diff, na.rm = TRUE),
+    Max = max(Trails_BA_Diff, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(trails_ba_summary)
+cat("\n")
+
+# Filter out NA values for testing
+trails_ba_clean <- merged_data %>%
+  filter(!is.na(Trails_BA_Diff), !is.na(Group_3Level))
+
+# Check normality
+cat("Normality Tests (Shapiro-Wilk):\n")
+for(grp in levels(trails_ba_clean$Group_3Level)) {
+  data_subset <- trails_ba_clean %>% filter(Group_3Level == grp) %>% pull(Trails_BA_Diff)
+  shapiro_result <- shapiro.test(data_subset)
+  cat(grp, ": W =", round(shapiro_result$statistic, 4), ", p =", shapiro_result$p.value)
+  if(shapiro_result$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+  cat("\n")
+}
+cat("\n")
+
+# Check homogeneity of variance
+levene_test <- leveneTest(Trails_BA_Diff ~ Group_3Level, data = trails_ba_clean)
+cat("Levene's Test for Homogeneity of Variance:\n")
+cat("F =", round(levene_test$`F value`[1], 4), ", p =", levene_test$`Pr(>F)`[1])
+if(levene_test$`Pr(>F)`[1] < 0.05) cat(" (variances unequal)") else cat(" (variances equal)")
+cat("\n\n")
+
+# Decide which test to use
+use_welch <- levene_test$`Pr(>F)`[1] < 0.05
+normality_check <- trails_ba_clean %>%
+  group_by(Group_3Level) %>%
+  summarise(p_val = shapiro.test(Trails_BA_Diff)$p.value) %>%
+  pull(p_val)
+use_nonparametric <- any(normality_check < 0.05)
+
+if(use_nonparametric) {
+  cat("⚠️  Data violates normality assumption. Using Kruskal-Wallis test.\n\n")
+  kw_test <- kruskal.test(Trails_BA_Diff ~ Group_3Level, data = trails_ba_clean)
+  cat("Kruskal-Wallis Test Results:\n")
+  cat("H statistic =", kw_test$statistic, "\n")
+  cat("df =", kw_test$parameter, "\n")
+  cat("p-value =", kw_test$p.value, "\n")
+  
+  epsilon_sq <- kw_test$statistic / ((nrow(trails_ba_clean)^2 - 1) / (nrow(trails_ba_clean) + 1))
+  cat("Epsilon-squared =", round(epsilon_sq, 3), "\n\n")
+  
+  p_value <- kw_test$p.value
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Dunn's test with Holm correction):\n")
+    dunn_results <- dunnTest(Trails_BA_Diff ~ Group_3Level, data = trails_ba_clean, method = "holm")
+    print(dunn_results$res)
+    cat("\n")
+  }
+  
+} else if(use_welch) {
+  cat("Variances are unequal. Using Welch's ANOVA.\n\n")
+  welch_anova <- oneway.test(Trails_BA_Diff ~ Group_3Level, data = trails_ba_clean, var.equal = FALSE)
+  cat("Welch's ANOVA Results:\n")
+  cat("F =", welch_anova$statistic, "\n")
+  cat("df1 =", welch_anova$parameter[1], ", df2 =", welch_anova$parameter[2], "\n")
+  cat("p-value =", welch_anova$p.value, "\n\n")
+  
+  p_value <- welch_anova$p.value
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Games-Howell):\n")
+    games_howell <- games_howell_test(trails_ba_clean, Trails_BA_Diff ~ Group_3Level)
+    print(games_howell)
+    cat("\n")
+  }
+  
+} else {
+  cat("Assumptions met. Using standard one-way ANOVA.\n\n")
+  anova_model <- aov(Trails_BA_Diff ~ Group_3Level, data = trails_ba_clean)
+  anova_summary <- summary(anova_model)
+  
+  cat("One-way ANOVA Results:\n")
+  print(anova_summary)
+  cat("\n")
+  
+  eta_sq <- effectsize::eta_squared(anova_model)
+  cat("Eta-squared =", round(eta_sq$Eta2[1], 3), "\n\n")
+  
+  p_value <- anova_summary[[1]]$`Pr(>F)`[1]
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Tukey HSD):\n")
+    tukey_results <- TukeyHSD(anova_model)
+    print(tukey_results)
+    cat("\n")
+  }
+}
+
+cat("\n--- INTERPRETATION ---\n")
+if(p_value < 0.05) {
+  cat("Result: SIGNIFICANT difference in Trails B-A difference across groups (p < 0.05)\n")
+  cat("See post-hoc tests above for pairwise comparisons\n")
+} else {
+  cat("Result: NO significant difference in Trails B-A difference across groups (p >= 0.05)\n")
+}
+```
+
+## Test 11: Corsi Block Total Score
+
+```{r test-11-corsi}
+cat("Corsi Block Test: Total Score\n")
+cat("Note: Corsi measures visuospatial working memory\n\n")
+
+# Summary statistics by group
+corsi_summary <- merged_data %>%
+  group_by(Group_3Level) %>%
+  summarise(
+    n = sum(!is.na(Corsi_Score_Total)),
+    Mean = mean(Corsi_Score_Total, na.rm = TRUE),
+    SD = sd(Corsi_Score_Total, na.rm = TRUE),
+    Median = median(Corsi_Score_Total, na.rm = TRUE),
+    Q1 = quantile(Corsi_Score_Total, 0.25, na.rm = TRUE),
+    Q3 = quantile(Corsi_Score_Total, 0.75, na.rm = TRUE),
+    Min = min(Corsi_Score_Total, na.rm = TRUE),
+    Max = max(Corsi_Score_Total, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(corsi_summary)
+cat("\n")
+
+# Filter out NA values for testing
+corsi_clean <- merged_data %>%
+  filter(!is.na(Corsi_Score_Total), !is.na(Group_3Level))
+
+# Check normality
+cat("Normality Tests (Shapiro-Wilk):\n")
+for(grp in levels(corsi_clean$Group_3Level)) {
+  data_subset <- corsi_clean %>% filter(Group_3Level == grp) %>% pull(Corsi_Score_Total)
+  shapiro_result <- shapiro.test(data_subset)
+  cat(grp, ": W =", round(shapiro_result$statistic, 4), ", p =", shapiro_result$p.value)
+  if(shapiro_result$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+  cat("\n")
+}
+cat("\n")
+
+# Check homogeneity of variance
+levene_test <- leveneTest(Corsi_Score_Total ~ Group_3Level, data = corsi_clean)
+cat("Levene's Test for Homogeneity of Variance:\n")
+cat("F =", round(levene_test$`F value`[1], 4), ", p =", levene_test$`Pr(>F)`[1])
+if(levene_test$`Pr(>F)`[1] < 0.05) cat(" (variances unequal)") else cat(" (variances equal)")
+cat("\n\n")
+
+# Decide which test to use
+use_welch <- levene_test$`Pr(>F)`[1] < 0.05
+normality_check <- corsi_clean %>%
+  group_by(Group_3Level) %>%
+  summarise(p_val = shapiro.test(Corsi_Score_Total)$p.value) %>%
+  pull(p_val)
+use_nonparametric <- any(normality_check < 0.05)
+
+if(use_nonparametric) {
+  cat("⚠️  Data violates normality assumption. Using Kruskal-Wallis test.\n\n")
+  kw_test <- kruskal.test(Corsi_Score_Total ~ Group_3Level, data = corsi_clean)
+  cat("Kruskal-Wallis Test Results:\n")
+  cat("H statistic =", kw_test$statistic, "\n")
+  cat("df =", kw_test$parameter, "\n")
+  cat("p-value =", kw_test$p.value, "\n")
+  
+  epsilon_sq <- kw_test$statistic / ((nrow(corsi_clean)^2 - 1) / (nrow(corsi_clean) + 1))
+  cat("Epsilon-squared =", round(epsilon_sq, 3), "\n\n")
+  
+  p_value <- kw_test$p.value
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Dunn's test with Holm correction):\n")
+    dunn_results <- dunnTest(Corsi_Score_Total ~ Group_3Level, data = corsi_clean, method = "holm")
+    print(dunn_results$res)
+    cat("\n")
+  }
+  
+} else if(use_welch) {
+  cat("Variances are unequal. Using Welch's ANOVA.\n\n")
+  welch_anova <- oneway.test(Corsi_Score_Total ~ Group_3Level, data = corsi_clean, var.equal = FALSE)
+  cat("Welch's ANOVA Results:\n")
+  cat("F =", welch_anova$statistic, "\n")
+  cat("df1 =", welch_anova$parameter[1], ", df2 =", welch_anova$parameter[2], "\n")
+  cat("p-value =", welch_anova$p.value, "\n\n")
+  
+  p_value <- welch_anova$p.value
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Games-Howell):\n")
+    games_howell <- games_howell_test(corsi_clean, Corsi_Score_Total ~ Group_3Level)
+    print(games_howell)
+    cat("\n")
+  }
+  
+} else {
+  cat("Assumptions met. Using standard one-way ANOVA.\n\n")
+  anova_model <- aov(Corsi_Score_Total ~ Group_3Level, data = corsi_clean)
+  anova_summary <- summary(anova_model)
+  
+  cat("One-way ANOVA Results:\n")
+  print(anova_summary)
+  cat("\n")
+  
+  eta_sq <- effectsize::eta_squared(anova_model)
+  cat("Eta-squared =", round(eta_sq$Eta2[1], 3), "\n\n")
+  
+  p_value <- anova_summary[[1]]$`Pr(>F)`[1]
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Tukey HSD):\n")
+    tukey_results <- TukeyHSD(anova_model)
+    print(tukey_results)
+    cat("\n")
+  }
+}
+
+cat("\n--- INTERPRETATION ---\n")
+if(p_value < 0.05) {
+  cat("Result: SIGNIFICANT difference in Corsi total score across groups (p < 0.05)\n")
+  cat("See post-hoc tests above for pairwise comparisons\n")
+} else {
+  cat("Result: NO significant difference in Corsi total score across groups (p >= 0.05)\n")
+}
+```
+
+## Test 12: SSQ Pre-Test Scores
+
+```{r test-12-ssq-pre}
+cat("SSQ Pre-Test: Simulator Sickness Questionnaire (Before VR)\n")
+cat("Note: Higher scores indicate MORE simulator sickness symptoms\n\n")
+
+# Summary statistics by group
+ssq_pre_summary <- merged_data %>%
+  group_by(Group_3Level) %>%
+  summarise(
+    n = sum(!is.na(SSQ_Pre)),
+    Mean = mean(SSQ_Pre, na.rm = TRUE),
+    SD = sd(SSQ_Pre, na.rm = TRUE),
+    Median = median(SSQ_Pre, na.rm = TRUE),
+    Q1 = quantile(SSQ_Pre, 0.25, na.rm = TRUE),
+    Q3 = quantile(SSQ_Pre, 0.75, na.rm = TRUE),
+    Min = min(SSQ_Pre, na.rm = TRUE),
+    Max = max(SSQ_Pre, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(ssq_pre_summary)
+cat("\n")
+
+# Filter out NA values for testing
+ssq_pre_clean <- merged_data %>%
+  filter(!is.na(SSQ_Pre), !is.na(Group_3Level))
+
+# Check normality
+cat("Normality Tests (Shapiro-Wilk):\n")
+for(grp in levels(ssq_pre_clean$Group_3Level)) {
+  data_subset <- ssq_pre_clean %>% filter(Group_3Level == grp) %>% pull(SSQ_Pre)
+  shapiro_result <- shapiro.test(data_subset)
+  cat(grp, ": W =", round(shapiro_result$statistic, 4), ", p =", shapiro_result$p.value)
+  if(shapiro_result$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+  cat("\n")
+}
+cat("\n")
+
+# Check homogeneity of variance
+levene_test <- leveneTest(SSQ_Pre ~ Group_3Level, data = ssq_pre_clean)
+cat("Levene's Test for Homogeneity of Variance:\n")
+cat("F =", round(levene_test$`F value`[1], 4), ", p =", levene_test$`Pr(>F)`[1])
+if(levene_test$`Pr(>F)`[1] < 0.05) cat(" (variances unequal)") else cat(" (variances equal)")
+cat("\n\n")
+
+# Decide which test to use
+use_welch <- levene_test$`Pr(>F)`[1] < 0.05
+normality_check <- ssq_pre_clean %>%
+  group_by(Group_3Level) %>%
+  summarise(p_val = shapiro.test(SSQ_Pre)$p.value) %>%
+  pull(p_val)
+use_nonparametric <- any(normality_check < 0.05)
+
+if(use_nonparametric) {
+  cat("⚠️  Data violates normality assumption. Using Kruskal-Wallis test.\n\n")
+  kw_test <- kruskal.test(SSQ_Pre ~ Group_3Level, data = ssq_pre_clean)
+  cat("Kruskal-Wallis Test Results:\n")
+  cat("H statistic =", kw_test$statistic, "\n")
+  cat("df =", kw_test$parameter, "\n")
+  cat("p-value =", kw_test$p.value, "\n")
+  
+  epsilon_sq <- kw_test$statistic / ((nrow(ssq_pre_clean)^2 - 1) / (nrow(ssq_pre_clean) + 1))
+  cat("Epsilon-squared =", round(epsilon_sq, 3), "\n\n")
+  
+  p_value <- kw_test$p.value
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Dunn's test with Holm correction):\n")
+    dunn_results <- dunnTest(SSQ_Pre ~ Group_3Level, data = ssq_pre_clean, method = "holm")
+    print(dunn_results$res)
+    cat("\n")
+  }
+  
+} else if(use_welch) {
+  cat("Variances are unequal. Using Welch's ANOVA.\n\n")
+  welch_anova <- oneway.test(SSQ_Pre ~ Group_3Level, data = ssq_pre_clean, var.equal = FALSE)
+  cat("Welch's ANOVA Results:\n")
+  cat("F =", welch_anova$statistic, "\n")
+  cat("df1 =", welch_anova$parameter[1], ", df2 =", welch_anova$parameter[2], "\n")
+  cat("p-value =", welch_anova$p.value, "\n\n")
+  
+  p_value <- welch_anova$p.value
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Games-Howell):\n")
+    games_howell <- games_howell_test(ssq_pre_clean, SSQ_Pre ~ Group_3Level)
+    print(games_howell)
+    cat("\n")
+  }
+  
+} else {
+  cat("Assumptions met. Using standard one-way ANOVA.\n\n")
+  anova_model <- aov(SSQ_Pre ~ Group_3Level, data = ssq_pre_clean)
+  anova_summary <- summary(anova_model)
+  
+  cat("One-way ANOVA Results:\n")
+  print(anova_summary)
+  cat("\n")
+  
+  eta_sq <- effectsize::eta_squared(anova_model)
+  cat("Eta-squared =", round(eta_sq$Eta2[1], 3), "\n\n")
+  
+  p_value <- anova_summary[[1]]$`Pr(>F)`[1]
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Tukey HSD):\n")
+    tukey_results <- TukeyHSD(anova_model)
+    print(tukey_results)
+    cat("\n")
+  }
+}
+
+cat("\n--- INTERPRETATION ---\n")
+if(p_value < 0.05) {
+  cat("Result: SIGNIFICANT difference in pre-test SSQ scores across groups (p < 0.05)\n")
+  cat("See post-hoc tests above for pairwise comparisons\n")
+} else {
+  cat("Result: NO significant difference in pre-test SSQ scores across groups (p >= 0.05)\n")
+}
+```
+
+## Test 13: SSQ Post-Test Scores
+
+```{r test-13-ssq-post}
+cat("SSQ Post-Test: Simulator Sickness Questionnaire (After VR)\n")
+cat("Note: Higher scores indicate MORE simulator sickness symptoms\n\n")
+
+# Summary statistics by group
+ssq_post_summary <- merged_data %>%
+  group_by(Group_3Level) %>%
+  summarise(
+    n = sum(!is.na(SSQ_Post)),
+    Mean = mean(SSQ_Post, na.rm = TRUE),
+    SD = sd(SSQ_Post, na.rm = TRUE),
+    Median = median(SSQ_Post, na.rm = TRUE),
+    Q1 = quantile(SSQ_Post, 0.25, na.rm = TRUE),
+    Q3 = quantile(SSQ_Post, 0.75, na.rm = TRUE),
+    Min = min(SSQ_Post, na.rm = TRUE),
+    Max = max(SSQ_Post, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(ssq_post_summary)
+cat("\n")
+
+# Filter out NA values for testing
+ssq_post_clean <- merged_data %>%
+  filter(!is.na(SSQ_Post), !is.na(Group_3Level))
+
+# Check normality
+cat("Normality Tests (Shapiro-Wilk):\n")
+for(grp in levels(ssq_post_clean$Group_3Level)) {
+  data_subset <- ssq_post_clean %>% filter(Group_3Level == grp) %>% pull(SSQ_Post)
+  shapiro_result <- shapiro.test(data_subset)
+  cat(grp, ": W =", round(shapiro_result$statistic, 4), ", p =", shapiro_result$p.value)
+  if(shapiro_result$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+  cat("\n")
+}
+cat("\n")
+
+# Check homogeneity of variance
+levene_test <- leveneTest(SSQ_Post ~ Group_3Level, data = ssq_post_clean)
+cat("Levene's Test for Homogeneity of Variance:\n")
+cat("F =", round(levene_test$`F value`[1], 4), ", p =", levene_test$`Pr(>F)`[1])
+if(levene_test$`Pr(>F)`[1] < 0.05) cat(" (variances unequal)") else cat(" (variances equal)")
+cat("\n\n")
+
+# Decide which test to use
+use_welch <- levene_test$`Pr(>F)`[1] < 0.05
+normality_check <- ssq_post_clean %>%
+  group_by(Group_3Level) %>%
+  summarise(p_val = shapiro.test(SSQ_Post)$p.value) %>%
+  pull(p_val)
+use_nonparametric <- any(normality_check < 0.05)
+
+if(use_nonparametric) {
+  cat("⚠️  Data violates normality assumption. Using Kruskal-Wallis test.\n\n")
+  kw_test <- kruskal.test(SSQ_Post ~ Group_3Level, data = ssq_post_clean)
+  cat("Kruskal-Wallis Test Results:\n")
+  cat("H statistic =", kw_test$statistic, "\n")
+  cat("df =", kw_test$parameter, "\n")
+  cat("p-value =", kw_test$p.value, "\n")
+  
+  epsilon_sq <- kw_test$statistic / ((nrow(ssq_post_clean)^2 - 1) / (nrow(ssq_post_clean) + 1))
+  cat("Epsilon-squared =", round(epsilon_sq, 3), "\n\n")
+  
+  p_value <- kw_test$p.value
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Dunn's test with Holm correction):\n")
+    dunn_results <- dunnTest(SSQ_Post ~ Group_3Level, data = ssq_post_clean, method = "holm")
+    print(dunn_results$res)
+    cat("\n")
+  }
+  
+} else if(use_welch) {
+  cat("Variances are unequal. Using Welch's ANOVA.\n\n")
+  welch_anova <- oneway.test(SSQ_Post ~ Group_3Level, data = ssq_post_clean, var.equal = FALSE)
+  cat("Welch's ANOVA Results:\n")
+  cat("F =", welch_anova$statistic, "\n")
+  cat("df1 =", welch_anova$parameter[1], ", df2 =", welch_anova$parameter[2], "\n")
+  cat("p-value =", welch_anova$p.value, "\n\n")
+  
+  p_value <- welch_anova$p.value
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Games-Howell):\n")
+    games_howell <- games_howell_test(ssq_post_clean, SSQ_Post ~ Group_3Level)
+    print(games_howell)
+    cat("\n")
+  }
+  
+} else {
+  cat("Assumptions met. Using standard one-way ANOVA.\n\n")
+  anova_model <- aov(SSQ_Post ~ Group_3Level, data = ssq_post_clean)
+  anova_summary <- summary(anova_model)
+  
+  cat("One-way ANOVA Results:\n")
+  print(anova_summary)
+  cat("\n")
+  
+  eta_sq <- effectsize::eta_squared(anova_model)
+  cat("Eta-squared =", round(eta_sq$Eta2[1], 3), "\n\n")
+  
+  p_value <- anova_summary[[1]]$`Pr(>F)`[1]
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Tukey HSD):\n")
+    tukey_results <- TukeyHSD(anova_model)
+    print(tukey_results)
+    cat("\n")
+  }
+}
+
+cat("\n--- INTERPRETATION ---\n")
+if(p_value < 0.05) {
+  cat("Result: SIGNIFICANT difference in post-test SSQ scores across groups (p < 0.05)\n")
+  cat("See post-hoc tests above for pairwise comparisons\n")
+} else {
+  cat("Result: NO significant difference in post-test SSQ scores across groups (p >= 0.05)\n")
+}
+```
+
+## Test 14: SSQ Difference (Post - Pre)
+
+```{r test-14-ssq-diff}
+cat("SSQ Difference: Post - Pre\n")
+cat("Note: Positive values indicate INCREASE in simulator sickness after VR\n\n")
+
+# Summary statistics by group
+ssq_diff_summary <- merged_data %>%
+  group_by(Group_3Level) %>%
+  summarise(
+    n = sum(!is.na(SSQ_Diff)),
+    Mean = mean(SSQ_Diff, na.rm = TRUE),
+    SD = sd(SSQ_Diff, na.rm = TRUE),
+    Median = median(SSQ_Diff, na.rm = TRUE),
+    Q1 = quantile(SSQ_Diff, 0.25, na.rm = TRUE),
+    Q3 = quantile(SSQ_Diff, 0.75, na.rm = TRUE),
+    Min = min(SSQ_Diff, na.rm = TRUE),
+    Max = max(SSQ_Diff, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(ssq_diff_summary)
+cat("\n")
+
+# Filter out NA values for testing
+ssq_diff_clean <- merged_data %>%
+  filter(!is.na(SSQ_Diff), !is.na(Group_3Level))
+
+# Check normality
+cat("Normality Tests (Shapiro-Wilk):\n")
+for(grp in levels(ssq_diff_clean$Group_3Level)) {
+  data_subset <- ssq_diff_clean %>% filter(Group_3Level == grp) %>% pull(SSQ_Diff)
+  shapiro_result <- shapiro.test(data_subset)
+  cat(grp, ": W =", round(shapiro_result$statistic, 4), ", p =", shapiro_result$p.value)
+  if(shapiro_result$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+  cat("\n")
+}
+cat("\n")
+
+# Check homogeneity of variance
+levene_test <- leveneTest(SSQ_Diff ~ Group_3Level, data = ssq_diff_clean)
+cat("Levene's Test for Homogeneity of Variance:\n")
+cat("F =", round(levene_test$`F value`[1], 4), ", p =", levene_test$`Pr(>F)`[1])
+if(levene_test$`Pr(>F)`[1] < 0.05) cat(" (variances unequal)") else cat(" (variances equal)")
+cat("\n\n")
+
+# Decide which test to use
+use_welch <- levene_test$`Pr(>F)`[1] < 0.05
+normality_check <- ssq_diff_clean %>%
+  group_by(Group_3Level) %>%
+  summarise(p_val = shapiro.test(SSQ_Diff)$p.value) %>%
+  pull(p_val)
+use_nonparametric <- any(normality_check < 0.05)
+
+if(use_nonparametric) {
+  cat("⚠️  Data violates normality assumption. Using Kruskal-Wallis test.\n\n")
+  kw_test <- kruskal.test(SSQ_Diff ~ Group_3Level, data = ssq_diff_clean)
+  cat("Kruskal-Wallis Test Results:\n")
+  cat("H statistic =", kw_test$statistic, "\n")
+  cat("df =", kw_test$parameter, "\n")
+  cat("p-value =", kw_test$p.value, "\n")
+  
+  epsilon_sq <- kw_test$statistic / ((nrow(ssq_diff_clean)^2 - 1) / (nrow(ssq_diff_clean) + 1))
+  cat("Epsilon-squared =", round(epsilon_sq, 3), "\n\n")
+  
+  p_value <- kw_test$p.value
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Dunn's test with Holm correction):\n")
+    dunn_results <- dunnTest(SSQ_Diff ~ Group_3Level, data = ssq_diff_clean, method = "holm")
+    print(dunn_results$res)
+    cat("\n")
+  }
+  
+} else if(use_welch) {
+  cat("Variances are unequal. Using Welch's ANOVA.\n\n")
+  welch_anova <- oneway.test(SSQ_Diff ~ Group_3Level, data = ssq_diff_clean, var.equal = FALSE)
+  cat("Welch's ANOVA Results:\n")
+  cat("F =", welch_anova$statistic, "\n")
+  cat("df1 =", welch_anova$parameter[1], ", df2 =", welch_anova$parameter[2], "\n")
+  cat("p-value =", welch_anova$p.value, "\n\n")
+  
+  p_value <- welch_anova$p.value
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Games-Howell):\n")
+    games_howell <- games_howell_test(ssq_diff_clean, SSQ_Diff ~ Group_3Level)
+    print(games_howell)
+    cat("\n")
+  }
+  
+} else {
+  cat("Assumptions met. Using standard one-way ANOVA.\n\n")
+  anova_model <- aov(SSQ_Diff ~ Group_3Level, data = ssq_diff_clean)
+  anova_summary <- summary(anova_model)
+  
+  cat("One-way ANOVA Results:\n")
+  print(anova_summary)
+  cat("\n")
+  
+  eta_sq <- effectsize::eta_squared(anova_model)
+  cat("Eta-squared =", round(eta_sq$Eta2[1], 3), "\n\n")
+  
+  p_value <- anova_summary[[1]]$`Pr(>F)`[1]
+  
+  if(p_value < 0.05) {
+    cat("Post-hoc Comparisons (Tukey HSD):\n")
+    tukey_results <- TukeyHSD(anova_model)
+    print(tukey_results)
+    cat("\n")
+  }
+}
+
+cat("\n--- INTERPRETATION ---\n")
+if(p_value < 0.05) {
+  cat("Result: SIGNIFICANT difference in SSQ change scores across groups (p < 0.05)\n")
+  cat("See post-hoc tests above for pairwise comparisons\n")
+} else {
+  cat("Result: NO significant difference in SSQ change scores across groups (p >= 0.05)\n")
+}
+```
+
+## Test 15: SSS Pre-Test Scores (Ordinal)
+
+```{r test-15-sss-pre}
+cat("SSS Pre-Test: Stanford Sleepiness Scale (Before VR)\n")
+cat("Note: Ordinal scale (1 = alert, 7 = very sleepy)\n")
+cat("Analysis: Kruskal-Wallis test (appropriate for ordinal data)\n\n")
+
+# Summary statistics by group
+sss_pre_summary <- merged_data %>%
+  group_by(Group_3Level) %>%
+  summarise(
+    n = sum(!is.na(SSS_Pre)),
+    Median = median(SSS_Pre, na.rm = TRUE),
+    Q1 = quantile(SSS_Pre, 0.25, na.rm = TRUE),
+    Q3 = quantile(SSS_Pre, 0.75, na.rm = TRUE),
+    Mean = mean(SSS_Pre, na.rm = TRUE),
+    SD = sd(SSS_Pre, na.rm = TRUE),
+    Min = min(SSS_Pre, na.rm = TRUE),
+    Max = max(SSS_Pre, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(sss_pre_summary)
+cat("\n")
+
+# Filter out NA values for testing
+sss_pre_clean <- merged_data %>%
+  filter(!is.na(SSS_Pre), !is.na(Group_3Level))
+
+# Kruskal-Wallis test
+kw_test <- kruskal.test(SSS_Pre ~ Group_3Level, data = sss_pre_clean)
+
+cat("Kruskal-Wallis Test Results:\n")
+cat("H statistic =", kw_test$statistic, "\n")
+cat("df =", kw_test$parameter, "\n")
+cat("p-value =", kw_test$p.value, "\n")
+
+# Effect size (epsilon-squared)
+epsilon_sq <- kw_test$statistic / ((nrow(sss_pre_clean)^2 - 1) / (nrow(sss_pre_clean) + 1))
+cat("Epsilon-squared =", round(epsilon_sq, 3), "\n\n")
+
+# Post-hoc: Dunn's test with Holm correction
+if(kw_test$p.value < 0.05) {
+  cat("Post-hoc Comparisons (Dunn's test with Holm correction):\n")
+  dunn_results <- dunnTest(SSS_Pre ~ Group_3Level, data = sss_pre_clean, method = "holm")
+  print(dunn_results$res)
+  cat("\n")
+}
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(kw_test$p.value < 0.05) {
+  cat("Result: SIGNIFICANT difference in pre-test sleepiness across groups (p < 0.05)\n")
+  cat("See post-hoc tests above for pairwise comparisons\n")
+} else {
+  cat("Result: NO significant difference in pre-test sleepiness across groups (p >= 0.05)\n")
+}
+```
+
+## Test 16: SSS Post-Test Scores (Ordinal)
+
+```{r test-16-sss-post}
+cat("SSS Post-Test: Stanford Sleepiness Scale (After VR)\n")
+cat("Note: Ordinal scale (1 = alert, 7 = very sleepy)\n")
+cat("Analysis: Kruskal-Wallis test (appropriate for ordinal data)\n\n")
+
+# Summary statistics by group
+sss_post_summary <- merged_data %>%
+  group_by(Group_3Level) %>%
+  summarise(
+    n = sum(!is.na(SSS_Post)),
+    Median = median(SSS_Post, na.rm = TRUE),
+    Q1 = quantile(SSS_Post, 0.25, na.rm = TRUE),
+    Q3 = quantile(SSS_Post, 0.75, na.rm = TRUE),
+    Mean = mean(SSS_Post, na.rm = TRUE),
+    SD = sd(SSS_Post, na.rm = TRUE),
+    Min = min(SSS_Post, na.rm = TRUE),
+    Max = max(SSS_Post, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(sss_post_summary)
+cat("\n")
+
+# Filter out NA values for testing
+sss_post_clean <- merged_data %>%
+  filter(!is.na(SSS_Post), !is.na(Group_3Level))
+
+# Kruskal-Wallis test
+kw_test <- kruskal.test(SSS_Post ~ Group_3Level, data = sss_post_clean)
+
+cat("Kruskal-Wallis Test Results:\n")
+cat("H statistic =", kw_test$statistic, "\n")
+cat("df =", kw_test$parameter, "\n")
+cat("p-value =", kw_test$p.value, "\n")
+
+# Effect size (epsilon-squared)
+epsilon_sq <- kw_test$statistic / ((nrow(sss_post_clean)^2 - 1) / (nrow(sss_post_clean) + 1))
+cat("Epsilon-squared =", round(epsilon_sq, 3), "\n\n")
+
+# Post-hoc: Dunn's test with Holm correction
+if(kw_test$p.value < 0.05) {
+  cat("Post-hoc Comparisons (Dunn's test with Holm correction):\n")
+  dunn_results <- dunnTest(SSS_Post ~ Group_3Level, data = sss_post_clean, method = "holm")
+  print(dunn_results$res)
+  cat("\n")
+}
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(kw_test$p.value < 0.05) {
+  cat("Result: SIGNIFICANT difference in post-test sleepiness across groups (p < 0.05)\n")
+  cat("See post-hoc tests above for pairwise comparisons\n")
+} else {
+  cat("Result: NO significant difference in post-test sleepiness across groups (p >= 0.05)\n")
+}
+```
+
+## Test 17: SSS Difference (Post - Pre) (Ordinal)
+
+```{r test-17-sss-diff}
+cat("SSS Difference: Post - Pre\n")
+cat("Note: Positive values indicate INCREASED sleepiness after VR\n")
+cat("Analysis: Kruskal-Wallis test (appropriate for ordinal difference scores)\n\n")
+
+# Summary statistics by group
+sss_diff_summary <- merged_data %>%
+  group_by(Group_3Level) %>%
+  summarise(
+    n = sum(!is.na(SSS_Diff)),
+    Median = median(SSS_Diff, na.rm = TRUE),
+    Q1 = quantile(SSS_Diff, 0.25, na.rm = TRUE),
+    Q3 = quantile(SSS_Diff, 0.75, na.rm = TRUE),
+    Mean = mean(SSS_Diff, na.rm = TRUE),
+    SD = sd(SSS_Diff, na.rm = TRUE),
+    Min = min(SSS_Diff, na.rm = TRUE),
+    Max = max(SSS_Diff, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(sss_diff_summary)
+cat("\n")
+
+# Filter out NA values for testing
+sss_diff_clean <- merged_data %>%
+  filter(!is.na(SSS_Diff), !is.na(Group_3Level))
+
+# Kruskal-Wallis test
+kw_test <- kruskal.test(SSS_Diff ~ Group_3Level, data = sss_diff_clean)
+
+cat("Kruskal-Wallis Test Results:\n")
+cat("H statistic =", kw_test$statistic, "\n")
+cat("df =", kw_test$parameter, "\n")
+cat("p-value =", kw_test$p.value, "\n")
+
+# Effect size (epsilon-squared)
+epsilon_sq <- kw_test$statistic / ((nrow(sss_diff_clean)^2 - 1) / (nrow(sss_diff_clean) + 1))
+cat("Epsilon-squared =", round(epsilon_sq, 3), "\n\n")
+
+# Post-hoc: Dunn's test with Holm correction
+if(kw_test$p.value < 0.05) {
+  cat("Post-hoc Comparisons (Dunn's test with Holm correction):\n")
+  dunn_results <- dunnTest(SSS_Diff ~ Group_3Level, data = sss_diff_clean, method = "holm")
+  print(dunn_results$res)
+  cat("\n")
+}
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(kw_test$p.value < 0.05) {
+  cat("Result: SIGNIFICANT difference in sleepiness change across groups (p < 0.05)\n")
+  cat("See post-hoc tests above for pairwise comparisons\n")
+} else {
+  cat("Result: NO significant difference in sleepiness change across groups (p >= 0.05)\n")
+}
+```

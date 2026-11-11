@@ -1,0 +1,233 @@
+---
+title: "Sensitivity Analysis: Teleport Distance (NARA Subgroups, Outlier Removal)"
+author: "Yasmine Bassil"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r global-options, include=FALSE}
+source(file.path(Sys.getenv("NAVCITY_CODE"), "setup.R"), local = TRUE)   # data paths, sample filter, fixes
+knitr::opts_chunk$set(echo=TRUE, warning=FALSE, message=FALSE)
+```
+
+```{r libraries}
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(emmeans)
+```
+
+```{r load-data}
+# Load OA and YA navigation data
+oa_data <- read_csv(file.path(navcity_path, "oa_merged_results.csv"))
+oa_data$Age_Group <- "OA"
+oa_data <- oa_data %>% select(-1)
+
+ya_data <- read_csv(file.path(navcity_path, "ya_merged_results.csv"))
+ya_data$Age_Group <- "YA"
+ya_data <- ya_data %>% select(-1)
+
+# Load non-navigation data to get NARA scores
+non_nav_data <- read_csv(file.path(paper_data_path, "non_nav_data.csv"))
+
+# Build NARA subgroups
+oa_nara <- non_nav_data %>%
+  filter(Group == "OA") %>%
+  select(Participant, NARA) %>%
+  filter(!is.na(NARA))
+
+nara_cutoff <- 3.5
+oa_groups <- oa_nara %>%
+  mutate(OA_Subgroup = ifelse(NARA >= nara_cutoff, "OA_High", "OA_Low"))
+
+cat("OA subgroup distribution:\n")
+print(table(oa_groups$OA_Subgroup))
+
+# Merge NARA subgroups back into OA navigation data
+oa_data <- oa_data %>%
+  left_join(oa_groups %>% select(Participant, OA_Subgroup), by = "Participant") %>%
+  mutate(
+    Age_Group = case_when(
+      is.na(OA_Subgroup) ~ "OA",
+      TRUE ~ OA_Subgroup
+    )
+  ) %>%
+  select(-OA_Subgroup)
+
+# Combine YA + OA (with subgroups) into one dataset
+nav_data <- bind_rows(oa_data, ya_data)
+
+# Set factor levels: YA as reference, then OA_High, then OA_Low
+nav_data$Age_Group <- factor(nav_data$Age_Group, levels = c("YA", "OA_High", "OA_Low"))
+nav_data$Block_Num <- factor(nav_data$Block_Num,
+                             levels = c("1", "2", "3"),
+                             labels = c("Block1", "Block2", "Block3"))
+
+cat("Age_Group levels:", levels(nav_data$Age_Group), "\n")
+cat("Total observations:", nrow(nav_data), "\n")
+print(table(nav_data$Age_Group, nav_data$Block_Num))
+```
+
+# Step 1: Identify the OA_High outlier on mean teleport distance
+
+Panel C in Fig. 6 shows each participant's mean teleport distance averaged across blocks. We compute this per-participant mean and inspect the OA_High group for outliers using two methods: (1) visual/lowest-separated and (2) IQR.
+
+```{r identify-outlier}
+# Compute per-participant mean teleport distance (averaged across blocks/targets)
+participant_means <- nav_data %>%
+  group_by(Participant, Age_Group) %>%
+  summarise(
+    Mean_Teleport_Distance_avg = mean(Mean_Teleport_Distance, na.rm = TRUE),
+    n_obs = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(Age_Group, Mean_Teleport_Distance_avg)
+
+# Show the lowest 5 OA_High participants
+cat("\n=== OA_High participants: 5 lowest mean teleport distances ===\n")
+participant_means %>%
+  filter(Age_Group == "OA_High") %>%
+  arrange(Mean_Teleport_Distance_avg) %>%
+  head(5) %>%
+  print()
+
+# IQR-based outlier detection within OA_High
+oa_high_vals <- participant_means %>%
+  filter(Age_Group == "OA_High") %>%
+  pull(Mean_Teleport_Distance_avg)
+
+q1 <- quantile(oa_high_vals, 0.25)
+q3 <- quantile(oa_high_vals, 0.75)
+iqr <- q3 - q1
+lower_fence <- q1 - 1.5 * iqr
+upper_fence <- q3 + 1.5 * iqr
+
+cat("\n=== OA_High IQR-based outlier fences ===\n")
+cat("Q1:", round(q1, 3), " Q3:", round(q3, 3), " IQR:", round(iqr, 3), "\n")
+cat("Lower fence (Q1 - 1.5*IQR):", round(lower_fence, 3), "\n")
+cat("Upper fence (Q3 + 1.5*IQR):", round(upper_fence, 3), "\n")
+
+iqr_outliers <- participant_means %>%
+  filter(Age_Group == "OA_High",
+         Mean_Teleport_Distance_avg < lower_fence |
+         Mean_Teleport_Distance_avg > upper_fence)
+
+cat("\nIQR-based outliers in OA_High:\n")
+print(iqr_outliers)
+
+# Visual/lowest-separated outlier: the single lowest value
+lowest_participant <- participant_means %>%
+  filter(Age_Group == "OA_High") %>%
+  arrange(Mean_Teleport_Distance_avg) %>%
+  slice(1)
+
+cat("\n=== Single lowest OA_High participant (visual outlier) ===\n")
+print(lowest_participant)
+
+# Define the outlier to remove (we will use the single lowest; adjust if IQR disagrees)
+outlier_participant <- lowest_participant$Participant
+cat("\nParticipant flagged for removal:", outlier_participant, "\n")
+```
+
+# Step 2: Run the LMM on teleport distance — full dataset (with outlier)
+
+```{r full-analysis}
+# Mixed model: Teleport distance ~ Age_Group (3 levels) * Block + random intercepts
+m_full <- lmer(Mean_Teleport_Distance ~ Age_Group * Block_Num +
+                 (1|Target_Name) + (1|Participant),
+               data = nav_data)
+
+cat("\n=== FULL MODEL: ANOVA ===\n")
+print(anova(m_full))
+
+# Overall (across-blocks) pairwise comparisons between age groups
+emm_age_full <- emmeans(m_full, ~ Age_Group)
+contrasts_age_full <- summary(pairs(emm_age_full, adjust = "fdr"), infer = TRUE)
+cat("\n=== FULL MODEL: Age-group pairwise contrasts (FDR-adjusted) ===\n")
+print(contrasts_age_full)
+
+# Block-specific pairwise comparisons between age groups
+emm_interaction_full <- emmeans(m_full, ~ Age_Group * Block_Num)
+contrasts_age_within_block_full <- summary(
+  pairs(emm_interaction_full, simple = "Age_Group", adjust = "fdr"),
+  infer = TRUE
+)
+cat("\n=== FULL MODEL: Age-group contrasts within each block (FDR) ===\n")
+print(contrasts_age_within_block_full)
+```
+
+# Step 3: Run the LMM on teleport distance — WITHOUT the outlier
+
+```{r sensitivity-analysis}
+nav_data_no_outlier <- nav_data %>%
+  filter(Participant != outlier_participant)
+
+cat("\nSample size check after outlier removal:\n")
+print(table(nav_data_no_outlier$Age_Group, nav_data_no_outlier$Block_Num))
+
+m_sens <- lmer(Mean_Teleport_Distance ~ Age_Group * Block_Num +
+                 (1|Target_Name) + (1|Participant),
+               data = nav_data_no_outlier)
+
+cat("\n=== SENSITIVITY MODEL (outlier removed): ANOVA ===\n")
+print(anova(m_sens))
+
+emm_age_sens <- emmeans(m_sens, ~ Age_Group)
+contrasts_age_sens <- summary(pairs(emm_age_sens, adjust = "fdr"), infer = TRUE)
+cat("\n=== SENSITIVITY MODEL: Age-group pairwise contrasts (FDR) ===\n")
+print(contrasts_age_sens)
+
+emm_interaction_sens <- emmeans(m_sens, ~ Age_Group * Block_Num)
+contrasts_age_within_block_sens <- summary(
+  pairs(emm_interaction_sens, simple = "Age_Group", adjust = "fdr"),
+  infer = TRUE
+)
+cat("\n=== SENSITIVITY MODEL: Age-group contrasts within each block (FDR) ===\n")
+print(contrasts_age_within_block_sens)
+```
+
+# Step 4: Side-by-side comparison
+
+```{r comparison-table}
+# Format and tag both full + sensitivity results, then combine
+tag_results <- function(df, label) {
+  df %>%
+    mutate(Analysis = label) %>%
+    select(Analysis, everything())
+}
+
+overall_compare <- bind_rows(
+  tag_results(as.data.frame(contrasts_age_full), "Full (with outlier)"),
+  tag_results(as.data.frame(contrasts_age_sens), "Sensitivity (outlier removed)")
+)
+
+within_block_compare <- bind_rows(
+  tag_results(as.data.frame(contrasts_age_within_block_full), "Full (with outlier)"),
+  tag_results(as.data.frame(contrasts_age_within_block_sens), "Sensitivity (outlier removed)")
+)
+
+cat("\n=== SIDE-BY-SIDE: Overall age-group contrasts ===\n")
+print(overall_compare)
+
+cat("\n=== SIDE-BY-SIDE: Age-group contrasts within each block ===\n")
+print(within_block_compare)
+```
+
+# Step 5: Save results (non-conflicting filenames)
+
+```{r save-results}
+write.csv(overall_compare,
+          "sensitivity_teleport_dist_overall_contrasts.csv",
+          row.names = FALSE)
+write.csv(within_block_compare,
+          "sensitivity_teleport_dist_within_block_contrasts.csv",
+          row.names = FALSE)
+write.csv(participant_means %>% filter(Age_Group == "OA_High"),
+          "sensitivity_teleport_dist_oa_high_participant_means.csv",
+          row.names = FALSE)
+
+cat("\nSaved:\n")
+cat("  sensitivity_teleport_dist_overall_contrasts.csv\n")
+cat("  sensitivity_teleport_dist_within_block_contrasts.csv\n")
+cat("  sensitivity_teleport_dist_oa_high_participant_means.csv\n")
+```

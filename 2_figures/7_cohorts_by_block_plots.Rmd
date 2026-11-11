@@ -1,0 +1,336 @@
+---
+title: "NARA Cohorts By Block Plots Code - Optimized"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r global-options, include=FALSE}
+source(file.path(Sys.getenv("NAVCITY_CODE"), "setup.R"), local = TRUE)   # data paths, sample filter, fixes
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r loading-libraries, include=FALSE}
+# Load required libraries for data analysis and visualization
+library(tidyverse)    # Data manipulation and ggplot2
+library(plotrix)      # For std.error function
+library(ggdist)       # Statistical distributions for ggplot2
+# library(gghalves)   # FIX: no longer needed (half-point layer replaced); does not work with ggplot2 4
+library(gridExtra)    # Arranging multiple plots
+library(scales)       # Scale formatting
+library(ggpubr)       # For stat_cor function
+```
+
+```{r setup-paths, include=FALSE}
+# Define file paths - MODIFY THESE FOR YOUR SYSTEM
+data_path <- paper_data_path
+output_path <- file.path(Sys.getenv("ANALYSIS_ROOT"), "output", "figures")
+dir.create(output_path, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r load-and-process-data, include=FALSE}
+# Function to load and standardize data (no column renaming needed)
+load_data <- function(file_path, age_group, has_target = FALSE) {
+  # Read CSV file
+  data <- read.csv(file_path)
+  
+  # Add age group column and remove index
+  data <- data %>%
+    select(-1) %>%  # Remove first column (index)
+    mutate(
+      Age = age_group,
+      Block_Num = as.factor(Block_Num)
+    )
+  
+  # Set target ordering only if this dataset has Target_Name column
+  if (has_target) {
+    desired_order <- c("Automobile shop", "Police station ", "Fire Station", 
+                      "Bank", "Pawn Shop", "Pizzeria", "Quattroki Restaurant", 
+                      "High School")
+    data$Target_Name <- factor(data$Target_Name, levels = desired_order)
+  }
+  
+  return(data)
+}
+
+# Load all datasets
+ya_ndata <- load_data(file.path(navcity_path, "ya_averaged_results.csv"), "YA")
+oa_ndata <- load_data(file.path(navcity_path, "oa_averaged_results.csv"), "OA")
+ya_nav_data <- load_data(file.path(navcity_path, "ya_merged_results.csv"), "YA", has_target = TRUE)
+oa_nav_data <- load_data(file.path(navcity_path, "oa_merged_results.csv"), "OA", has_target = TRUE)
+
+# Load non-navigation data
+# FIX: Group 0/1 -> "YA"/"OA" and Age (years) added; see setup.R
+non_nav_data <- label_paper_groups(read.csv(file.path(paper_data_path, "non_nav_data.csv"))) %>%
+  select(-Age)  # Remove Age column to avoid conflicts
+
+# Combine averaged data
+all_data <- bind_rows(ya_ndata, oa_ndata) %>%
+  mutate(Age = factor(Age, levels = c("YA", "OA")))
+
+print(paste("Loaded averaged data for", nrow(all_data), "participant-blocks"))
+print(paste("Loaded non-navigation data for", nrow(non_nav_data), "participants"))
+```
+
+```{r create-cohorts-and-merge, include=FALSE}
+# Merge navigation data with NARA scores and create three cohorts
+df_merge <- all_data %>%
+  left_join(non_nav_data, by = "Participant") %>%
+  filter(!is.na(NARA))  # Remove participants without NARA scores
+
+# Create final dataset with three cohorts
+df_final <- df_merge %>%
+  mutate(
+    Cohort = case_when(
+      Age == "YA" ~ "ya",
+      Age == "OA" & NARA >= 3.5 ~ "oa_high",
+      Age == "OA" & NARA <= 3.5 ~ "oa_low",
+      TRUE ~ NA_character_
+    ),
+    Cohort = factor(Cohort, levels = c("ya", "oa_high", "oa_low"))
+  )
+
+# Create datasets for each cohort
+ya_data <- filter(df_final, Cohort == "ya")
+oa_high <- filter(df_final, Cohort == "oa_high")
+oa_low <- filter(df_final, Cohort == "oa_low")
+
+# Create deduplicated dataset for NARA analysis
+df_final_drop <- df_final %>%
+  select(Participant, Age, NARA, Cohort) %>%
+  distinct()
+
+print("Cohort distribution:")
+print(table(df_final$Cohort, useNA = "ifany"))
+print(paste("Unique participants with NARA scores:", nrow(df_final_drop)))
+```
+
+```{r plotting-functions, include=FALSE}
+# Function to create summary statistics for three cohorts
+create_cohort_summary <- function(data, measure_var, group_var = "Block_Num") {
+  data %>%
+    group_by(Cohort, .data[[group_var]]) %>%
+    summarise(
+      mean_val = mean(.data[[measure_var]], na.rm = TRUE),
+      se = std.error(.data[[measure_var]]),
+      .groups = 'drop'
+    ) %>%
+    rename(!!measure_var := mean_val)  # Rename mean_val back to original variable name
+}
+
+# Function to create three-group line plots
+create_cohort_line_plot <- function(data, y_var, y_label, y_limits = NULL, 
+                                   colors = c('ya' = '#FF9FAF', 'oa_low' = '#8A9AFF', 'oa_high' = '#325AF5')) {
+  
+  # Create summary statistics for mean lines
+  summary_stats <- create_cohort_summary(data, y_var)
+  
+  # Create base plot
+  p <- ggplot(data, aes(x = Block_Num, y = .data[[y_var]], color = Cohort)) +
+    
+    # Set colors
+    scale_color_manual(values = colors) +
+    
+    # Individual participant lines (faded)
+    geom_line(aes(group = Participant), alpha = 0.2) +
+    
+    # Individual participant points with white outline
+    geom_point(aes(group = Participant), color = 'white', size = 5) +
+    geom_point(aes(group = Participant), size = 3, alpha = 0.2) +
+    
+    # Mean lines for each cohort (bold)
+    geom_line(data = filter(summary_stats, Cohort == "ya"), 
+              aes(x = Block_Num, y = .data[[y_var]], group = 1), 
+              size = 1.5, color = colors[['ya']]) +
+    geom_line(data = filter(summary_stats, Cohort == "oa_high"), 
+              aes(x = Block_Num, y = .data[[y_var]], group = 1), 
+              size = 1.5, color = colors[['oa_high']]) +
+    geom_line(data = filter(summary_stats, Cohort == "oa_low"), 
+              aes(x = Block_Num, y = .data[[y_var]], group = 1), 
+              size = 1.5, color = colors[['oa_low']]) +
+    
+    # Error bars for each cohort
+    stat_summary(data = filter(data, Cohort == "ya"), fun.data = mean_se, 
+                geom = "errorbar", width = 0.2, size = 1, color = colors[['ya']]) +
+    stat_summary(data = filter(data, Cohort == "oa_high"), fun.data = mean_se, 
+                geom = "errorbar", width = 0.2, size = 1, color = colors[['oa_high']]) +
+    stat_summary(data = filter(data, Cohort == "oa_low"), fun.data = mean_se, 
+                geom = "errorbar", width = 0.2, size = 1, color = colors[['oa_low']]) +
+    
+    # Labels and formatting
+    labs(color = "Cohort", y = y_label, x = "") +
+    scale_x_discrete(labels = c("Block 1", "Block 2", "Block 3")) +
+    
+    # Set y-axis limits if provided
+    {if (!is.null(y_limits)) ylim(y_limits)} +
+    
+    # Theme
+    theme_classic() +
+    theme(
+      axis.line = element_line(linewidth = 0.5, colour = "#242526"),
+      axis.ticks = element_line(linewidth = 0.2, colour = "#242526"),
+      plot.title = element_text(hjust = 0.5),
+      legend.position = "none",
+      axis.text.x = element_text(size = 20),
+      axis.text.y = element_text(size = 20),
+      axis.title.y = element_text(size = 20)
+    )
+  
+  return(p)
+}
+
+# Function to create NARA raincloud plot
+create_nara_raincloud <- function(data, colors = c('ya' = '#FF9FAF', 'oa_low' = '#8A9AFF', 'oa_high' = '#325AF5')) {
+  ggplot(data, aes(x = Cohort, y = NARA, fill = Cohort, color = Cohort)) +
+    scale_fill_manual(values = colors) +
+    scale_color_manual(values = colors) +
+    scale_x_discrete(labels = c("YA", "OA High", "OA Low")) +
+    labs(y = "NARA Score (%)", x = "", color = "Cohort") +
+    theme_classic() +
+    theme(
+      axis.line = element_line(linewidth = 0.5, colour = "#242526"),
+      axis.ticks = element_line(linewidth = 0.2, colour = "#242526"),
+      plot.title = element_text(hjust = 0.5),
+      legend.position = "none",
+      axis.text.x = element_text(size = 20),
+      axis.text.y = element_text(size = 20),
+      axis.title.y = element_text(size = 20)
+    ) +
+    stat_halfeye(
+      adjust = 0.5,
+      justification = -0.2,
+      .width = 0,
+      point_colour = NA,
+      scale = 0.5
+    ) +
+    geom_boxplot(
+      width = 0.12,
+      outlier.color = NA,
+      alpha = 0.5
+    ) +
+    geom_point(   # FIX: was the gghalves half-point layer (left side), which fails with ggplot2 4
+      alpha = 0.3,
+      position = position_jitter_left(width = 0.12)
+    )
+}
+
+# Function to save plots with consistent settings
+save_plot <- function(plot, filename, width = 5, height = 5) {
+  ggsave(
+    filename = file.path(output_path, paste0(filename, ".svg")),
+    plot = plot,
+    width = width,
+    height = height
+  )
+  cat("Saved:", filename, "\n")
+}
+```
+
+```{r create-nara-plot, include=FALSE}
+# Create NARA distribution plot
+rain_nara <- create_nara_raincloud(df_final_drop)
+print("Created NARA raincloud plot")
+```
+
+```{r create-all-line-plots, include=FALSE}
+# Define plot specifications for easy management
+plot_specs <- tribble(
+  ~var_name,                ~label,                              ~y_limits,
+  "Total_Time",             "Total Time (s)",                    NULL,
+  "Orientation_Time",       "Orientation Time (s)",              c(0, 30),
+  "Navigation_Time",        "Navigation Time (s)",               c(0, 300),
+  "Distance",               "Distance Traveled (m)",       NULL,
+  "Speed",                  "Speed (m/s)",                 c(0, 30),
+  "Mean_Dwell",             "Dwell Duration (s)",                    NULL,
+  "Teleportations",         "Teleportations (count)",            NULL,
+  "Mean_Teleport_Distance", "Teleport Distance (m)", NULL
+)
+
+# Create all line plots using functional programming
+plots <- map2(plot_specs$var_name, plot_specs$label, function(var, label) {
+  spec <- filter(plot_specs, var_name == var)
+  create_cohort_line_plot(
+    data = df_final,
+    y_var = var,
+    y_label = label,
+    y_limits = spec$y_limits[[1]]
+  )
+})
+
+# Name the plots for easy reference
+names(plots) <- paste0("p_", c("ct", "orict", "navct", "dt", "speed", "dwell", "teleport", "teleport_dt"))
+
+# Extract individual plots
+p_ct <- plots$p_ct
+p_orict <- plots$p_orict  
+p_navct <- plots$p_navct
+p_dt <- plots$p_dt
+p_speed <- plots$p_speed
+p_dwell <- plots$p_dwell
+p_teleport <- plots$p_teleport
+p_teleport_dt <- plots$p_teleport_dt
+
+print("Created all three-cohort line plots")
+```
+
+```{r save-individual-plots, include=FALSE}
+# Save NARA raincloud plot
+save_plot(rain_nara, "7_cohorts_by_block_nara_rain")
+
+# Save all line plots efficiently
+plot_names <- c("7_cohorts_by_block_ct", "7_cohorts_by_block_orict", 
+                "7_cohorts_by_block_navct", "7_cohorts_by_block_dt", 
+                "7_cohorts_by_block_speed", "7_cohorts_by_block_dwell",
+                "7_cohorts_by_block_teleport", "7_cohorts_by_block_teleport_dt")
+
+walk2(plots, plot_names, ~ save_plot(.x, .y))
+```
+
+```{r create-composite-figure, fig.height=20, fig.width=20, fig.align="center"}
+# Create composite figure with all plots arranged in a grid
+# 4x2 layout with 8 plots
+composite_plot <- grid.arrange(
+  p_speed, p_ct, p_orict, p_navct,               # Row 1
+  p_dt, p_dwell, p_teleport, p_teleport_dt,    # Row 2
+  ncol = 4, 
+  nrow = 2
+)
+
+# Save composite figure
+save_plot(composite_plot, "7_cohorts_by_block_composite", width = 20, height = 20)
+```
+
+```{r summary-statistics, include=FALSE}
+# Generate summary statistics for each measure by cohort and block
+summary_stats <- df_final %>%
+  pivot_longer(
+    cols = c(Total_Time, Orientation_Time, Navigation_Time, Distance, 
+             Speed, Mean_Dwell, Teleportations, Mean_Teleport_Distance),
+    names_to = "Measure",
+    values_to = "Value"
+  ) %>%
+  group_by(Cohort, Block_Num, Measure) %>%
+  summarise(
+    n = n(),
+    mean = round(mean(Value, na.rm = TRUE), 2),
+    se = round(std.error(Value), 3),
+    .groups = 'drop'
+  )
+
+print("Summary statistics by cohort, block, and measure:")
+print(summary_stats)
+
+# NARA score distribution by cohort
+nara_summary <- df_final_drop %>%
+  group_by(Cohort) %>%
+  summarise(
+    n = n(),
+    mean_nara = round(mean(NARA, na.rm = TRUE), 2),
+    sd_nara = round(sd(NARA, na.rm = TRUE), 2),
+    min_nara = round(min(NARA, na.rm = TRUE), 2),
+    max_nara = round(max(NARA, na.rm = TRUE), 2),
+    .groups = 'drop'
+  )
+
+print("NARA scores by cohort:")
+print(nara_summary)
+```

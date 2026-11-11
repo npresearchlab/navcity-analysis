@@ -1,0 +1,693 @@
+---
+title: "NavCity Performance Analysis: Low NARA Scorers (BNC01 & BNC037)"
+author: "Analysis"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+source(file.path(Sys.getenv("NAVCITY_CODE"), "setup.R"), local = TRUE)   # data paths, sample filter, fixes
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width = 10, fig.height = 6)
+```
+
+## Introduction
+
+This analysis examines the NavCity performance of two young adult participants (BNC01 and BNC037) who scored below the NARA cutoff of 3.5, comparing them to the rest of the young adult cohort.
+
+```{r load-libraries}
+library(tidyverse)
+library(ggplot2)
+library(knitr)
+library(patchwork)
+```
+
+```{r load-data}
+# Load the data
+ya_averaged <- read.csv(file.path(navcity_path, "ya_averaged_results.csv"))
+ya_merged <- read.csv(file.path(navcity_path, "ya_merged_results.csv"))
+non_nav <- read.csv(file.path(paper_data_path, "non_nav_data.csv"))
+
+# Check which participants are in YA group
+ya_participants <- ya_averaged %>% 
+  pull(Participant) %>% 
+  unique()
+
+# Get NARA scores for YA participants
+nara_data <- non_nav %>%
+  filter(Group == "YA") %>%
+  select(Participant, NARA, Group, SBSOD, MiniCog)
+
+# Identify low NARA scorers
+low_nara <- c("BNC01", "BNC37")
+
+# Add a grouping variable
+ya_averaged <- ya_averaged %>%
+  mutate(NARA_Group = case_when(
+    Participant %in% low_nara ~ "Low NARA (< 3.5)",
+    TRUE ~ "Normal NARA"
+  ))
+
+ya_merged <- ya_merged %>%
+  mutate(NARA_Group = case_when(
+    Participant %in% low_nara ~ "Low NARA (< 3.5)",
+    TRUE ~ "Normal NARA"
+  ))
+```
+
+## NARA Score Distribution
+
+```{r nara-distribution}
+ggplot(nara_data, aes(x = NARA)) +
+  geom_histogram(binwidth = 0.5, fill = "lightblue", color = "black", alpha = 0.7) +
+  geom_vline(xintercept = 3.5, color = "red", linetype = "dashed", size = 1) +
+  geom_point(data = nara_data %>% filter(Participant %in% low_nara),
+             aes(x = NARA, y = 0), color = "red", size = 4, shape = 17) +
+  annotate("text", x = 3.5, y = Inf, label = "NARA cutoff = 3.5", 
+           hjust = -0.1, vjust = 2, color = "red") +
+  labs(title = "NARA Score Distribution in Young Adults",
+       subtitle = "Red triangles indicate BNC01 and BNC037",
+       x = "NARA Score", y = "Count") +
+  theme_minimal()
+
+# Show NARA scores for low scorers
+kable(nara_data %>% 
+        filter(Participant %in% low_nara) %>%
+        arrange(NARA),
+      caption = "NARA Scores for Low Scorers")
+```
+
+## Summary Statistics
+
+```{r summary-stats}
+# Calculate summary statistics by NARA group
+summary_stats <- ya_averaged %>%
+  group_by(NARA_Group) %>%
+  summarise(
+    N_Participants = n_distinct(Participant),
+    Mean_Speed = mean(Speed, na.rm = TRUE),
+    SD_Speed = sd(Speed, na.rm = TRUE),
+    Mean_Distance = mean(Distance, na.rm = TRUE),
+    SD_Distance = sd(Distance, na.rm = TRUE),
+    Mean_Nav_Time = mean(Navigation_Time, na.rm = TRUE),
+    SD_Nav_Time = sd(Navigation_Time, na.rm = TRUE),
+    Mean_Dwell = mean(Mean_Dwell, na.rm = TRUE),
+    SD_Dwell = sd(Mean_Dwell, na.rm = TRUE),
+    Mean_Teleportations = mean(Teleportations, na.rm = TRUE),
+    SD_Teleportations = sd(Teleportations, na.rm = TRUE)
+  )
+
+kable(summary_stats, digits = 2, 
+      caption = "Summary Statistics: Low NARA vs Normal NARA Young Adults")
+```
+
+## Performance Comparisons: Overall Averages
+
+```{r overall-comparisons, fig.height=10}
+# Calculate participant-level averages (across all blocks)
+participant_avg <- ya_averaged %>%
+  group_by(Participant, NARA_Group) %>%
+  summarise(
+    Speed = mean(Speed, na.rm = TRUE),
+    Distance = mean(Distance, na.rm = TRUE),
+    Navigation_Time = mean(Navigation_Time, na.rm = TRUE),
+    Mean_Dwell = mean(Mean_Dwell, na.rm = TRUE),
+    Teleportations = mean(Teleportations, na.rm = TRUE),
+    Mean_Teleport_Distance = mean(Mean_Teleport_Distance, na.rm = TRUE)
+  )
+
+# Create color palette
+colors <- c("Low NARA (< 3.5)" = "#e74c3c", "Normal NARA" = "#3498db")
+
+# Speed
+p1 <- ggplot(participant_avg, aes(x = NARA_Group, y = Speed, color = NARA_Group)) +
+  geom_jitter(width = 0.2, size = 2, alpha = 0.6) +
+  geom_point(data = participant_avg %>% filter(Participant %in% low_nara),
+             aes(x = NARA_Group, y = Speed), 
+             color = "#c0392b", size = 4, shape = 17) +
+  stat_summary(fun = mean, geom = "crossbar", width = 0.5, color = "black") +
+  scale_color_manual(values = colors) +
+  labs(title = "Mean Speed", x = "", y = "Speed (m/s)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Distance
+p2 <- ggplot(participant_avg, aes(x = NARA_Group, y = Distance, color = NARA_Group)) +
+  geom_jitter(width = 0.2, size = 2, alpha = 0.6) +
+  geom_point(data = participant_avg %>% filter(Participant %in% low_nara),
+             aes(x = NARA_Group, y = Distance), 
+             color = "#c0392b", size = 4, shape = 17) +
+  stat_summary(fun = mean, geom = "crossbar", width = 0.5, color = "black") +
+  scale_color_manual(values = colors) +
+  labs(title = "Mean Distance Traveled", x = "", y = "Distance (m)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Navigation Time
+p3 <- ggplot(participant_avg, aes(x = NARA_Group, y = Navigation_Time, color = NARA_Group)) +
+  geom_jitter(width = 0.2, size = 2, alpha = 0.6) +
+  geom_point(data = participant_avg %>% filter(Participant %in% low_nara),
+             aes(x = NARA_Group, y = Navigation_Time), 
+             color = "#c0392b", size = 4, shape = 17) +
+  stat_summary(fun = mean, geom = "crossbar", width = 0.5, color = "black") +
+  scale_color_manual(values = colors) +
+  labs(title = "Mean Navigation Time", x = "", y = "Time (s)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Dwell Duration
+p4 <- ggplot(participant_avg, aes(x = NARA_Group, y = Mean_Dwell, color = NARA_Group)) +
+  geom_jitter(width = 0.2, size = 2, alpha = 0.6) +
+  geom_point(data = participant_avg %>% filter(Participant %in% low_nara),
+             aes(x = NARA_Group, y = Mean_Dwell), 
+             color = "#c0392b", size = 4, shape = 17) +
+  stat_summary(fun = mean, geom = "crossbar", width = 0.5, color = "black") +
+  scale_color_manual(values = colors) +
+  labs(title = "Mean Dwell Duration", x = "", y = "Duration (s)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Teleportations
+p5 <- ggplot(participant_avg, aes(x = NARA_Group, y = Teleportations, color = NARA_Group)) +
+  geom_jitter(width = 0.2, size = 2, alpha = 0.6) +
+  geom_point(data = participant_avg %>% filter(Participant %in% low_nara),
+             aes(x = NARA_Group, y = Teleportations), 
+             color = "#c0392b", size = 4, shape = 17) +
+  stat_summary(fun = mean, geom = "crossbar", width = 0.5, color = "black") +
+  scale_color_manual(values = colors) +
+  labs(title = "Mean Teleportations", x = "", y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Teleport Distance
+p6 <- ggplot(participant_avg, aes(x = NARA_Group, y = Mean_Teleport_Distance, color = NARA_Group)) +
+  geom_jitter(width = 0.2, size = 2, alpha = 0.6) +
+  geom_point(data = participant_avg %>% filter(Participant %in% low_nara),
+             aes(x = NARA_Group, y = Mean_Teleport_Distance), 
+             color = "#c0392b", size = 4, shape = 17) +
+  stat_summary(fun = mean, geom = "crossbar", width = 0.5, color = "black") +
+  scale_color_manual(values = colors) +
+  labs(title = "Mean Teleport Distance", x = "", y = "Distance (m)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Combine plots
+(p1 + p2 + p3) / (p4 + p5 + p6) +
+  plot_annotation(
+    title = "NavCity Performance: Low NARA Scorers (red triangles) vs Normal NARA",
+    subtitle = "Black bars indicate group means"
+  )
+```
+
+## Performance Across Blocks
+
+```{r block-comparisons, fig.height=10}
+# Speed by block
+b1 <- ggplot(ya_averaged, aes(x = Block_Num, y = Speed, group = Participant)) +
+  geom_line(aes(color = NARA_Group), alpha = 0.3) +
+  geom_line(data = ya_averaged %>% filter(Participant %in% low_nara),
+            aes(color = NARA_Group), size = 1.5) +
+  geom_point(data = ya_averaged %>% filter(Participant %in% low_nara),
+             aes(color = NARA_Group), size = 3) +
+  stat_summary(aes(group = NARA_Group, color = NARA_Group), 
+               fun = mean, geom = "line", size = 2, linetype = "dashed") +
+  scale_color_manual(values = colors) +
+  labs(title = "Speed Across Blocks", x = "Block", y = "Speed (m/s)") +
+  theme_minimal()
+
+# Distance by block
+b2 <- ggplot(ya_averaged, aes(x = Block_Num, y = Distance, group = Participant)) +
+  geom_line(aes(color = NARA_Group), alpha = 0.3) +
+  geom_line(data = ya_averaged %>% filter(Participant %in% low_nara),
+            aes(color = NARA_Group), size = 1.5) +
+  geom_point(data = ya_averaged %>% filter(Participant %in% low_nara),
+             aes(color = NARA_Group), size = 3) +
+  stat_summary(aes(group = NARA_Group, color = NARA_Group), 
+               fun = mean, geom = "line", size = 2, linetype = "dashed") +
+  scale_color_manual(values = colors) +
+  labs(title = "Distance Across Blocks", x = "Block", y = "Distance (m)") +
+  theme_minimal()
+
+# Navigation Time by block
+b3 <- ggplot(ya_averaged, aes(x = Block_Num, y = Navigation_Time, group = Participant)) +
+  geom_line(aes(color = NARA_Group), alpha = 0.3) +
+  geom_line(data = ya_averaged %>% filter(Participant %in% low_nara),
+            aes(color = NARA_Group), size = 1.5) +
+  geom_point(data = ya_averaged %>% filter(Participant %in% low_nara),
+             aes(color = NARA_Group), size = 3) +
+  stat_summary(aes(group = NARA_Group, color = NARA_Group), 
+               fun = mean, geom = "line", size = 2, linetype = "dashed") +
+  scale_color_manual(values = colors) +
+  labs(title = "Navigation Time Across Blocks", x = "Block", y = "Time (s)") +
+  theme_minimal()
+
+# Teleportations by block
+b4 <- ggplot(ya_averaged, aes(x = Block_Num, y = Teleportations, group = Participant)) +
+  geom_line(aes(color = NARA_Group), alpha = 0.3) +
+  geom_line(data = ya_averaged %>% filter(Participant %in% low_nara),
+            aes(color = NARA_Group), size = 1.5) +
+  geom_point(data = ya_averaged %>% filter(Participant %in% low_nara),
+             aes(color = NARA_Group), size = 3) +
+  stat_summary(aes(group = NARA_Group, color = NARA_Group), 
+               fun = mean, geom = "line", size = 2, linetype = "dashed") +
+  scale_color_manual(values = colors) +
+  labs(title = "Teleportations Across Blocks", x = "Block", y = "Count") +
+  theme_minimal()
+
+(b1 + b2) / (b3 + b4) +
+  plot_annotation(
+    title = "Performance Trends: Low NARA Scorers (thick lines) vs Normal NARA (thin lines)",
+    subtitle = "Dashed lines show group means"
+  )
+```
+
+## Correlation with NARA Scores
+
+```{r nara-correlations, fig.height=8}
+# Merge NARA scores with navigation data
+participant_avg_nara <- participant_avg %>%
+  left_join(nara_data %>% select(Participant, NARA), by = "Participant")
+
+# Speed vs NARA
+c1 <- ggplot(participant_avg_nara, aes(x = NARA, y = Speed)) +
+  geom_point(aes(color = NARA_Group), size = 2, alpha = 0.7) +
+  geom_point(data = participant_avg_nara %>% filter(Participant %in% low_nara),
+             size = 4, color = "#c0392b", shape = 17) +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed") +
+  geom_vline(xintercept = 3.5, color = "red", linetype = "dotted") +
+  scale_color_manual(values = colors) +
+  labs(title = "Speed vs NARA Score", x = "NARA Score", y = "Speed (m/s)") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+# Distance vs NARA
+c2 <- ggplot(participant_avg_nara, aes(x = NARA, y = Distance)) +
+  geom_point(aes(color = NARA_Group), size = 2, alpha = 0.7) +
+  geom_point(data = participant_avg_nara %>% filter(Participant %in% low_nara),
+             size = 4, color = "#c0392b", shape = 17) +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed") +
+  geom_vline(xintercept = 3.5, color = "red", linetype = "dotted") +
+  scale_color_manual(values = colors) +
+  labs(title = "Distance vs NARA Score", x = "NARA Score", y = "Distance (m)") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+# Navigation Time vs NARA
+c3 <- ggplot(participant_avg_nara, aes(x = NARA, y = Navigation_Time)) +
+  geom_point(aes(color = NARA_Group), size = 2, alpha = 0.7) +
+  geom_point(data = participant_avg_nara %>% filter(Participant %in% low_nara),
+             size = 4, color = "#c0392b", shape = 17) +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed") +
+  geom_vline(xintercept = 3.5, color = "red", linetype = "dotted") +
+  scale_color_manual(values = colors) +
+  labs(title = "Navigation Time vs NARA Score", x = "NARA Score", y = "Time (s)") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+# Teleportations vs NARA
+c4 <- ggplot(participant_avg_nara, aes(x = NARA, y = Teleportations)) +
+  geom_point(aes(color = NARA_Group), size = 2, alpha = 0.7) +
+  geom_point(data = participant_avg_nara %>% filter(Participant %in% low_nara),
+             size = 4, color = "#c0392b", shape = 17) +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed") +
+  geom_vline(xintercept = 3.5, color = "red", linetype = "dotted") +
+  scale_color_manual(values = colors) +
+  labs(title = "Teleportations vs NARA Score", x = "NARA Score", y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+(c1 + c2) / (c3 + c4) +
+  plot_annotation(
+    title = "Navigation Performance Correlations with NARA Score",
+    subtitle = "Red triangles indicate BNC01 and BNC037"
+  )
+```
+
+```{r correlation-tests}
+# Calculate correlations
+cor_results <- data.frame(
+  Metric = c("Speed", "Distance", "Navigation_Time", "Teleportations"),
+  Correlation = c(
+    cor(participant_avg_nara$NARA, participant_avg_nara$Speed, use = "complete.obs"),
+    cor(participant_avg_nara$NARA, participant_avg_nara$Distance, use = "complete.obs"),
+    cor(participant_avg_nara$NARA, participant_avg_nara$Navigation_Time, use = "complete.obs"),
+    cor(participant_avg_nara$NARA, participant_avg_nara$Teleportations, use = "complete.obs")
+  )
+)
+
+# Add p-values
+cor_results$P_Value <- c(
+  cor.test(participant_avg_nara$NARA, participant_avg_nara$Speed)$p.value,
+  cor.test(participant_avg_nara$NARA, participant_avg_nara$Distance)$p.value,
+  cor.test(participant_avg_nara$NARA, participant_avg_nara$Navigation_Time)$p.value,
+  cor.test(participant_avg_nara$NARA, participant_avg_nara$Teleportations)$p.value
+)
+
+kable(cor_results, digits = 3, 
+      caption = "Correlations between NARA Score and Navigation Metrics")
+```
+
+## Statistical Comparisons
+
+```{r statistical-tests}
+# T-tests comparing low NARA vs normal NARA
+metrics <- c("Speed", "Distance", "Navigation_Time", "Mean_Dwell", "Teleportations")
+
+test_results <- data.frame()
+
+for (metric in metrics) {
+  low_nara_vals <- participant_avg %>% 
+    filter(NARA_Group == "Low NARA (< 3.5)") %>% 
+    pull(metric)
+  
+  normal_nara_vals <- participant_avg %>% 
+    filter(NARA_Group == "Normal NARA") %>% 
+    pull(metric)
+  
+  t_test <- t.test(low_nara_vals, normal_nara_vals)
+  
+  test_results <- rbind(test_results, data.frame(
+    Metric = metric,
+    Low_NARA_Mean = mean(low_nara_vals, na.rm = TRUE),
+    Normal_NARA_Mean = mean(normal_nara_vals, na.rm = TRUE),
+    Difference = mean(low_nara_vals, na.rm = TRUE) - mean(normal_nara_vals, na.rm = TRUE),
+    T_Statistic = t_test$statistic,
+    P_Value = t_test$p.value,
+    Cohen_d = (mean(low_nara_vals, na.rm = TRUE) - mean(normal_nara_vals, na.rm = TRUE)) / 
+              sqrt((var(low_nara_vals, na.rm = TRUE) + var(normal_nara_vals, na.rm = TRUE)) / 2)
+  ))
+}
+
+kable(test_results, digits = 3, 
+      caption = "Statistical Comparisons: Low NARA vs Normal NARA")
+```
+
+## Outlier Detection
+
+### Method 1: IQR Method (Tukey's Fences)
+
+```{r iqr-outliers}
+# Function to detect outliers using IQR method
+detect_iqr_outliers <- function(x) {
+  q1 <- quantile(x, 0.25, na.rm = TRUE)
+  q3 <- quantile(x, 0.75, na.rm = TRUE)
+  iqr <- q3 - q1
+  lower_fence <- q1 - 1.5 * iqr
+  upper_fence <- q3 + 1.5 * iqr
+  x < lower_fence | x > upper_fence
+}
+
+# Detect outliers for each metric
+metrics_to_check <- c("Speed", "Distance", "Navigation_Time", "Mean_Dwell", 
+                      "Teleportations", "Mean_Teleport_Distance")
+
+iqr_outliers <- participant_avg %>%
+  select(Participant, NARA_Group, all_of(metrics_to_check)) %>%
+  pivot_longer(cols = all_of(metrics_to_check), 
+               names_to = "Metric", 
+               values_to = "Value") %>%
+  group_by(Metric) %>%
+  mutate(
+    Q1 = quantile(Value, 0.25, na.rm = TRUE),
+    Q3 = quantile(Value, 0.75, na.rm = TRUE),
+    IQR = Q3 - Q1,
+    Lower_Fence = Q1 - 1.5 * IQR,
+    Upper_Fence = Q3 + 1.5 * IQR,
+    Is_Outlier = Value < Lower_Fence | Value > Upper_Fence,
+    Outlier_Type = case_when(
+      Value < Lower_Fence ~ "Low",
+      Value > Upper_Fence ~ "High",
+      TRUE ~ "Normal"
+    )
+  ) %>%
+  ungroup()
+
+# Summary of outliers for BNC01 and BNC037
+low_nara_iqr <- iqr_outliers %>%
+  filter(Participant %in% low_nara) %>%
+  select(Participant, Metric, Value, Q1, Q3, Lower_Fence, Upper_Fence, 
+         Is_Outlier, Outlier_Type)
+
+kable(low_nara_iqr, digits = 2,
+      caption = "IQR-Based Outlier Detection for BNC01 and BNC037")
+
+# Count outliers by participant
+outlier_counts <- iqr_outliers %>%
+  filter(Is_Outlier) %>%
+  count(Participant, name = "N_Outlier_Metrics") %>%
+  arrange(desc(N_Outlier_Metrics))
+
+kable(head(outlier_counts, 10), 
+      caption = "Participants with Most Outlier Metrics (IQR Method)")
+```
+
+### Method 2: Z-Score Method
+
+```{r zscore-outliers}
+# Calculate z-scores
+zscore_outliers <- participant_avg %>%
+  select(Participant, NARA_Group, all_of(metrics_to_check)) %>%
+  pivot_longer(cols = all_of(metrics_to_check), 
+               names_to = "Metric", 
+               values_to = "Value") %>%
+  group_by(Metric) %>%
+  mutate(
+    Mean = mean(Value, na.rm = TRUE),
+    SD = sd(Value, na.rm = TRUE),
+    Z_Score = (Value - Mean) / SD,
+    Is_Outlier_2SD = abs(Z_Score) > 2,
+    Is_Outlier_3SD = abs(Z_Score) > 3
+  ) %>%
+  ungroup()
+
+# Summary for BNC01 and BNC037
+low_nara_zscore <- zscore_outliers %>%
+  filter(Participant %in% low_nara) %>%
+  select(Participant, Metric, Value, Z_Score, Is_Outlier_2SD, Is_Outlier_3SD)
+
+kable(low_nara_zscore, digits = 2,
+      caption = "Z-Score Based Outlier Detection for BNC01 and BNC037")
+
+# Count outliers by participant (2 SD threshold)
+zscore_counts <- zscore_outliers %>%
+  filter(Is_Outlier_2SD) %>%
+  count(Participant, name = "N_Outlier_Metrics_2SD") %>%
+  arrange(desc(N_Outlier_Metrics_2SD))
+
+kable(head(zscore_counts, 10), 
+      caption = "Participants with Most Outlier Metrics (Z-Score > 2)")
+```
+
+### Method 3: Multivariate Outlier Detection (Mahalanobis Distance)
+
+```{r mahalanobis-outliers}
+# Calculate Mahalanobis distance
+# First, create complete dataset with participant info
+participant_avg_complete <- participant_avg %>%
+  select(Participant, NARA_Group, Speed, Distance, Navigation_Time, Teleportations) %>%
+  na.omit() %>%
+  ungroup()  # This removes the grouping
+
+# Extract only numeric columns for Mahalanobis calculation
+nav_metrics <- participant_avg_complete %>%
+  select(Speed, Distance, Navigation_Time, Teleportations)
+
+# Calculate Mahalanobis distance
+if (nrow(nav_metrics) > ncol(nav_metrics)) {
+  mahal_dist <- mahalanobis(nav_metrics, 
+                             center = colMeans(nav_metrics),
+                             cov = cov(nav_metrics))
+  
+  # Chi-square critical value (df = number of variables, p = 0.001)
+  critical_value <- qchisq(0.999, df = ncol(nav_metrics))
+  
+  # Add Mahalanobis distance back to participant data
+  participant_avg_complete <- participant_avg_complete %>%
+    mutate(
+      Mahalanobis_Distance = mahal_dist,
+      Is_Multivariate_Outlier = mahal_dist > critical_value
+    )
+  
+  # Show results for all participants
+  mahal_results <- participant_avg_complete %>%
+    arrange(desc(Mahalanobis_Distance)) %>%
+    mutate(Rank = row_number())
+  
+  kable(head(mahal_results, 10), digits = 2,
+        caption = "Top 10 Multivariate Outliers (Mahalanobis Distance)")
+  
+  # Highlight BNC01 and BNC037
+  low_nara_mahal <- mahal_results %>%
+    filter(Participant %in% low_nara)
+  
+  kable(low_nara_mahal, digits = 2,
+        caption = "Mahalanobis Distance for BNC01 and BNC037")
+  
+  # Visualize
+  ggplot(mahal_results, aes(x = reorder(Participant, Mahalanobis_Distance), 
+                            y = Mahalanobis_Distance)) +
+    geom_point(aes(color = NARA_Group), size = 2, alpha = 0.6) +
+    geom_point(data = low_nara_mahal, 
+               aes(x = Participant, y = Mahalanobis_Distance),
+               color = "#c0392b", size = 4, shape = 17) +
+    geom_hline(yintercept = critical_value, color = "red", linetype = "dashed") +
+    annotate("text", x = Inf, y = critical_value, 
+             label = paste0("Critical value (p=0.001): ", round(critical_value, 2)),
+             hjust = 1.1, vjust = -0.5, color = "red") +
+    scale_color_manual(values = colors) +
+    labs(title = "Multivariate Outlier Detection (Mahalanobis Distance)",
+         subtitle = "Based on Speed, Distance, Navigation Time, and Teleportations",
+         x = "Participant", y = "Mahalanobis Distance") +
+    theme_minimal() +
+    theme(axis.text.x = element_blank(),
+          axis.ticks.x = element_blank())
+}
+```
+
+### Outlier Detection Summary
+
+```{r outlier-summary}
+# Combine all outlier detection results
+outlier_summary <- participant_avg %>%
+  select(Participant, NARA_Group) %>%
+  left_join(
+    iqr_outliers %>%
+      filter(Is_Outlier) %>%
+      count(Participant, name = "N_IQR_Outliers"),
+    by = "Participant"
+  ) %>%
+  left_join(
+    zscore_outliers %>%
+      filter(Is_Outlier_2SD) %>%
+      count(Participant, name = "N_ZScore_Outliers"),
+    by = "Participant"
+  ) %>%
+  left_join(
+    participant_avg_complete %>%
+      select(Participant, Mahalanobis_Distance, Is_Multivariate_Outlier),
+    by = "Participant"
+  ) %>%
+  replace_na(list(N_IQR_Outliers = 0, N_ZScore_Outliers = 0, 
+                  Is_Multivariate_Outlier = FALSE)) %>%
+  mutate(
+    Total_Outlier_Flags = N_IQR_Outliers + N_ZScore_Outliers + 
+                          as.integer(Is_Multivariate_Outlier)
+  ) %>%
+  arrange(desc(Total_Outlier_Flags))
+
+kable(head(outlier_summary, 10), digits = 2,
+      caption = "Combined Outlier Detection Summary (Top 10)")
+
+# Highlight BNC01 and BNC037
+low_nara_summary <- outlier_summary %>%
+  filter(Participant %in% low_nara)
+
+kable(low_nara_summary, digits = 2,
+      caption = "Combined Outlier Summary for BNC01 and BNC037")
+```
+
+### Visualization: Outlier Status Across Metrics
+
+```{r outlier-heatmap, fig.height=8}
+# Create a heatmap of outlier status
+outlier_heatmap_data <- iqr_outliers %>%
+  select(Participant, Metric, Is_Outlier, Outlier_Type) %>%
+  mutate(
+    Outlier_Value = case_when(
+      Outlier_Type == "High" ~ 1,
+      Outlier_Type == "Low" ~ -1,
+      TRUE ~ 0
+    )
+  )
+
+# Focus on participants with any outliers
+participants_with_outliers <- outlier_heatmap_data %>%
+  filter(Is_Outlier) %>%
+  pull(Participant) %>%
+  unique()
+
+ggplot(outlier_heatmap_data %>% filter(Participant %in% participants_with_outliers),
+       aes(x = Metric, y = Participant, fill = factor(Outlier_Value))) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(data = outlier_heatmap_data %>% 
+              filter(Participant %in% low_nara, Is_Outlier),
+            aes(label = "★"), size = 6, color = "gold") +
+  scale_fill_manual(values = c("-1" = "#3498db", "0" = "white", "1" = "#e74c3c"),
+                    labels = c("Low Outlier", "Normal", "High Outlier"),
+                    name = "Outlier Status") +
+  labs(title = "Outlier Detection Heatmap (IQR Method)",
+       subtitle = "Gold stars indicate BNC01 and BNC037",
+       x = "Metric", y = "Participant") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Individual Profiles
+
+```{r individual-profiles}
+# Detailed stats for BNC01 and BNC037
+low_nara_details <- participant_avg %>%
+  filter(Participant %in% low_nara) %>%
+  left_join(nara_data, by = "Participant")
+
+kable(low_nara_details, digits = 2,
+      caption = "Detailed Profiles: BNC01 and BNC037")
+
+# Get percentile ranks for each metric
+percentile_ranks <- participant_avg %>%
+  filter(Participant %in% low_nara) %>%
+  select(Participant, Speed, Distance, Navigation_Time, Teleportations) %>%
+  pivot_longer(-Participant, names_to = "Metric", values_to = "Value") %>%
+  left_join(
+    participant_avg %>%
+      select(Participant, Speed, Distance, Navigation_Time, Teleportations) %>%
+      pivot_longer(-Participant, names_to = "Metric", values_to = "Value") %>%
+      group_by(Metric) %>%
+      summarise(Values = list(Value)),
+    by = "Metric"
+  ) %>%
+  rowwise() %>%
+  mutate(
+    Percentile = sum(Value >= unlist(Values)) / length(unlist(Values)) * 100
+  ) %>%
+  select(Participant, Metric, Value, Percentile)
+
+kable(percentile_ranks, digits = 2,
+      caption = "Percentile Ranks for BNC01 and BNC037")
+```
+
+## Conclusion
+
+### Key Findings:
+
+1. **NARA Scores**: BNC01 and BNC037 scored below the 3.5 cutoff, making them the only two YAs below this threshold
+
+2. **Outlier Detection**:
+   - **IQR Method**: Identifies outliers using Tukey's fences (Q1 - 1.5×IQR, Q3 + 1.5×IQR)
+   - **Z-Score Method**: Flags values more than 2 standard deviations from the mean
+   - **Mahalanobis Distance**: Detects multivariate outliers considering all metrics simultaneously
+   - The summary table shows how many outlier flags each participant has across methods
+
+3. **Performance Comparison**: The statistical tests show whether BNC01 and BNC037 perform significantly differently from the rest of the YA cohort on each metric
+
+4. **Patterns**: The visualizations reveal whether low NARA scores correspond to specific navigation deficits
+
+### Interpretation:
+
+- **Red triangles** in the plots identify BNC01 and BNC037
+- **Gold stars** in the heatmap indicate where these participants are statistical outliers
+- If these participants have multiple outlier flags, especially on metrics like speed (low) or time/distance (high), it suggests their low NARA scores are associated with measurable navigation difficulties
+- The **percentile ranks** show exactly where these participants fall relative to the entire YA distribution
+- The **Mahalanobis distance** reveals if they're outliers when considering the entire pattern of navigation performance (not just individual metrics)
+
+### Clinical Relevance:
+
+Being a statistical outlier on navigation metrics while also having low NARA scores could indicate:
+- Navigation difficulties may be more pronounced in these individuals
+- Low NARA scores may be predictive of poor spatial navigation performance
+- These two participants might represent a subgroup worth investigating further
+

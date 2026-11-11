@@ -1,0 +1,1867 @@
+---
+title: "NavCity OA Subgroup Analysis - High vs Low NARA"
+author: "Your Name"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+  pdf_document:
+    latex_engine: xelatex
+    keep_tex: true
+---
+
+```{r setup, include=FALSE}
+source(file.path(Sys.getenv("NAVCITY_CODE"), "setup.R"), local = TRUE)   # data paths, sample filter, fixes
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Load Required Libraries
+
+```{r libraries}
+library(tidyverse)
+library(broom)
+library(knitr)
+library(kableExtra)
+library(reshape2)
+library(car)
+```
+
+# Data Import and Preparation
+
+```{r import-data}
+# Load all data files
+demographic_data <- read_csv(file.path(paper_data_path, "demographic_data.csv"))
+non_nav <- read_csv(file.path(paper_data_path, "non_nav_data.csv"))
+ya_nav <- read_csv(file.path(navcity_path, "ya_averaged_results.csv"))
+oa_nav <- read_csv(file.path(navcity_path, "oa_averaged_results.csv"))
+
+# Combine YA and OA navigation data
+nav_data <- bind_rows(
+  ya_nav %>% mutate(Group = "YA"),
+  oa_nav %>% mutate(Group = "OA")
+)
+
+# Average navigation metrics across all blocks for each participant
+nav_averaged <- nav_data %>%
+  group_by(Participant, Group) %>%
+  summarise(
+    Mean_Speed = mean(Speed, na.rm = TRUE),
+    Mean_Distance = mean(Distance, na.rm = TRUE),
+    Mean_Navigation_Time = mean(Navigation_Time, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Merge all datasets
+merged_temp <- demographic_data %>%
+  full_join(non_nav, by = "Participant", suffix = c("_demo", "_non_nav")) %>%
+  mutate(Group = coalesce(Group_non_nav, 
+                          if_else(Group_demo == 1, "YA", "OA"))) %>%
+  select(-Group_demo, -Group_non_nav)
+
+merged_data <- merged_temp %>%
+  left_join(nav_averaged, by = c("Participant", "Group"))
+
+# Calculate change scores
+merged_data <- merged_data %>%
+  mutate(
+    SSS_Diff = SSS_Post - SSS_Pre,
+    SSQ_Diff = SSQ_Post - SSQ_Pre
+  )
+
+# FILTER TO ONLY OA PARTICIPANTS
+merged_data <- merged_data %>%
+  filter(Group == "OA")
+
+# CREATE OA SUBGROUPS BASED ON NARA SCORE
+merged_data <- merged_data %>%
+  mutate(OA_Subgroup = ifelse(NARA >= 3.5, "OA_High", "OA_Low"))
+
+# Display sample of merged data
+cat("Total OA participants:", nrow(merged_data), "\n")
+cat("OA_High participants (NARA ≥ 3.5):", sum(merged_data$OA_Subgroup == "OA_High", na.rm = TRUE), "\n")
+cat("OA_Low participants (NARA < 3.5):", sum(merged_data$OA_Subgroup == "OA_Low", na.rm = TRUE), "\n\n")
+
+# Show NARA distribution
+cat("NARA Score Distribution:\n")
+cat("Range:", range(merged_data$NARA, na.rm = TRUE), "\n")
+cat("Mean:", mean(merged_data$NARA, na.rm = TRUE), "\n")
+cat("Median:", median(merged_data$NARA, na.rm = TRUE), "\n\n")
+
+head(merged_data) %>% 
+  select(Participant, OA_Subgroup, NARA, SBSOD, Mean_Speed) %>%
+  kable() %>% 
+  kable_styling()
+```
+
+# OA Subgroup Comparisons (High vs. Low NARA)
+
+## Test 1: Gender Distribution
+
+```{r test-1-gender}
+# Create contingency table
+gender_table <- table(merged_data$Gender, merged_data$OA_Subgroup)
+
+cat("Contingency Table:\n")
+print(gender_table)
+cat("\n")
+
+# Add row and column totals for clarity
+gender_table_with_totals <- addmargins(gender_table)
+cat("With Totals:\n")
+print(gender_table_with_totals)
+cat("\n")
+
+# Calculate proportions within each subgroup
+cat("Proportions by OA Subgroup:\n")
+prop_table <- prop.table(gender_table, margin = 2)
+print(round(prop_table, 3))
+cat("\n")
+
+# Perform chi-square test (without Yates' continuity correction)
+chi_test <- chisq.test(gender_table, correct = FALSE)
+
+cat("Chi-Square Test Results:\n")
+cat("χ² =", chi_test$statistic, "\n")
+cat("df =", chi_test$parameter, "\n")
+cat("p-value =", chi_test$p.value, "\n")
+
+# Check expected frequencies
+cat("\nExpected Frequencies:\n")
+print(round(chi_test$expected, 2))
+cat("\n")
+
+# Calculate effect size (Cramér's V)
+n <- sum(gender_table)
+cramers_v <- sqrt(chi_test$statistic / n)
+cat("Cramér's V =", round(cramers_v, 3), "\n")
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(chi_test$p.value < 0.05) {
+  cat("Result: SIGNIFICANT difference in gender distribution between OA subgroups (p < 0.05)\n")
+} else {
+  cat("Result: NO significant difference in gender distribution between OA subgroups (p >= 0.05)\n")
+}
+
+# Check assumption
+if(min(chi_test$expected) < 5) {
+  cat("⚠️ WARNING: Some expected frequencies < 5. Consider Fisher's exact test.\n")
+  fisher_test <- fisher.test(gender_table)
+  cat("\nFisher's Exact Test (alternative):\n")
+  cat("p-value =", fisher_test$p.value, "\n")
+}
+```
+
+## Test 2: Handedness Distribution
+
+```{r test-2-handedness}
+# Create contingency table (original 3 categories)
+handedness_table_original <- table(merged_data$Handedness, merged_data$OA_Subgroup)
+
+cat("Original Contingency Table (R, L, M):\n")
+print(handedness_table_original)
+cat("\n")
+
+# Check if we have enough observations in each cell
+cat("Raw counts by category:\n")
+cat("Right-handed: OA_High =", handedness_table_original["R", "OA_High"], ", OA_Low =", handedness_table_original["R", "OA_Low"], "\n")
+cat("Left-handed: OA_High =", handedness_table_original["L", "OA_High"], ", OA_Low =", handedness_table_original["L", "OA_Low"], "\n")
+cat("Mixed: OA_High =", handedness_table_original["M", "OA_High"], ", OA_Low =", handedness_table_original["M", "OA_Low"], "\n\n")
+
+# Create collapsed category: Right vs. Non-Right
+merged_data <- merged_data %>%
+  mutate(Handedness_Collapsed = ifelse(Handedness == "R", "Right-handed", "Non-right-handed"))
+
+# Create new contingency table
+handedness_table <- table(merged_data$Handedness_Collapsed, merged_data$OA_Subgroup)
+
+cat("Collapsed Contingency Table (Right vs. Non-Right):\n")
+print(handedness_table)
+cat("\n")
+
+# Add row and column totals
+handedness_table_with_totals <- addmargins(handedness_table)
+cat("With Totals:\n")
+print(handedness_table_with_totals)
+cat("\n")
+
+# Calculate proportions within each subgroup
+cat("Proportions by OA Subgroup:\n")
+prop_table <- prop.table(handedness_table, margin = 2)
+print(round(prop_table, 3))
+cat("\n")
+
+# Perform chi-square test (without Yates' correction)
+chi_test <- chisq.test(handedness_table, correct = FALSE)
+
+cat("Chi-Square Test Results:\n")
+cat("χ² =", chi_test$statistic, "\n")
+cat("df =", chi_test$parameter, "\n")
+cat("p-value =", chi_test$p.value, "\n")
+
+# Check expected frequencies
+cat("\nExpected Frequencies:\n")
+print(round(chi_test$expected, 2))
+cat("\n")
+
+# Calculate effect size (Cramér's V)
+n <- sum(handedness_table)
+cramers_v <- sqrt(chi_test$statistic / n)
+cat("Cramér's V =", round(cramers_v, 3), "\n")
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(chi_test$p.value < 0.05) {
+  cat("Result: SIGNIFICANT difference in handedness distribution between OA subgroups (p < 0.05)\n")
+} else {
+  cat("Result: NO significant difference in handedness distribution between OA subgroups (p >= 0.05)\n")
+}
+
+# Check assumptions
+if(min(chi_test$expected) < 5) {
+  cat("⚠️ WARNING: Some expected frequencies < 5. Consider Fisher's exact test.\n")
+  fisher_test <- fisher.test(handedness_table)
+  cat("\nFisher's Exact Test (alternative):\n")
+  cat("p-value =", fisher_test$p.value, "\n")
+}
+```
+
+## Test 3: Prior VR Experience Distribution
+
+```{r test-3-vr-experience}
+cat("VR Experience: Prior VR Exposure\n")
+cat("Note: Ordinal scale (0 = never, 1 = 1-3 times, 2 = >3 times)\n")
+cat("Analysis: Mann-Whitney U test (appropriate for ordinal data)\n\n")
+
+# Show the coding scheme
+cat("VR Experience Coding:\n")
+cat("  0 = Never\n")
+cat("  1 = 1-3 times\n")
+cat("  2 = More than 3 times\n\n")
+
+# Summary statistics by subgroup (emphasizing median for ordinal data)
+vr_summary <- merged_data %>%
+  group_by(OA_Subgroup) %>%
+  summarise(
+    n = sum(!is.na(VR_Experience_Quantified)),
+    Median = median(VR_Experience_Quantified, na.rm = TRUE),
+    Q1 = quantile(VR_Experience_Quantified, 0.25, na.rm = TRUE),
+    Q3 = quantile(VR_Experience_Quantified, 0.75, na.rm = TRUE),
+    Mean = mean(VR_Experience_Quantified, na.rm = TRUE),
+    SD = sd(VR_Experience_Quantified, na.rm = TRUE),
+    Min = min(VR_Experience_Quantified, na.rm = TRUE),
+    Max = max(VR_Experience_Quantified, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(vr_summary)
+cat("\n")
+
+# Show frequency distribution
+cat("Frequency Distribution:\n")
+freq_table <- table(merged_data$VR_Experience_Quantified, merged_data$OA_Subgroup)
+print(freq_table)
+cat("\n")
+
+# Filter out NA values for testing
+vr_data_clean <- merged_data %>%
+  filter(!is.na(VR_Experience_Quantified), !is.na(OA_Subgroup))
+
+oa_high_vr <- vr_data_clean %>% filter(OA_Subgroup == "OA_High") %>% pull(VR_Experience_Quantified)
+oa_low_vr <- vr_data_clean %>% filter(OA_Subgroup == "OA_Low") %>% pull(VR_Experience_Quantified)
+
+# Mann-Whitney U test
+mw_test <- wilcox.test(oa_high_vr, oa_low_vr, exact = FALSE)
+
+cat("Mann-Whitney U Test Results:\n")
+cat("W statistic =", mw_test$statistic, "\n")
+cat("p-value =", mw_test$p.value, "\n")
+
+# Effect size (rank-biserial correlation)
+n1 <- length(oa_high_vr)
+n2 <- length(oa_low_vr)
+r_rank_biserial <- 1 - (2*mw_test$statistic) / (n1 * n2)
+cat("Rank-biserial correlation =", round(r_rank_biserial, 3), "\n")
+
+# Report IQR for each subgroup
+cat("\nIQR by OA subgroup:\n")
+cat("OA_High: [", quantile(oa_high_vr, 0.25), ", ", quantile(oa_high_vr, 0.75), "]\n", sep = "")
+cat("OA_Low: [", quantile(oa_low_vr, 0.25), ", ", quantile(oa_low_vr, 0.75), "]\n", sep = "")
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(mw_test$p.value < 0.05) {
+  cat("Result: SIGNIFICANT difference in VR experience between OA subgroups (p < 0.05)\n")
+  if(median(oa_high_vr) > median(oa_low_vr)) {
+    cat("Direction: OA_High has MORE prior VR experience (Median High =", median(oa_high_vr), 
+        ", Low =", median(oa_low_vr), ")\n")
+  } else if(median(oa_high_vr) < median(oa_low_vr)) {
+    cat("Direction: OA_Low has MORE prior VR experience (Median High =", median(oa_high_vr), 
+        ", Low =", median(oa_low_vr), ")\n")
+  } else {
+    cat("Direction: Medians are equal, but distributions differ\n")
+  }
+} else {
+  cat("Result: NO significant difference in VR experience between OA subgroups (p >= 0.05)\n")
+  cat("Median OA_High =", median(oa_high_vr), ", Median OA_Low =", median(oa_low_vr), "\n")
+}
+```
+
+## Test 4: Weekly Video Game Usage
+
+```{r test-4-video-games}
+cat("Video Game Usage (numeric variable)\n\n")
+
+# Summary statistics by subgroup
+vg_summary <- merged_data %>%
+  group_by(OA_Subgroup) %>%
+  summarise(
+    n = sum(!is.na(Video_Game_Experience_Quantified)),
+    Mean = mean(Video_Game_Experience_Quantified, na.rm = TRUE),
+    SD = sd(Video_Game_Experience_Quantified, na.rm = TRUE),
+    Median = median(Video_Game_Experience_Quantified, na.rm = TRUE),
+    Q1 = quantile(Video_Game_Experience_Quantified, 0.25, na.rm = TRUE),
+    Q3 = quantile(Video_Game_Experience_Quantified, 0.75, na.rm = TRUE),
+    Min = min(Video_Game_Experience_Quantified, na.rm = TRUE),
+    Max = max(Video_Game_Experience_Quantified, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(vg_summary)
+cat("\n")
+
+# Filter out NA values for testing
+vg_data_clean <- merged_data %>%
+  filter(!is.na(Video_Game_Experience_Quantified), !is.na(OA_Subgroup))
+
+oa_high_vg <- vg_data_clean %>% filter(OA_Subgroup == "OA_High") %>% pull(Video_Game_Experience_Quantified)
+oa_low_vg <- vg_data_clean %>% filter(OA_Subgroup == "OA_Low") %>% pull(Video_Game_Experience_Quantified)
+
+# Check normality with Shapiro-Wilk test
+cat("Normality Tests (Shapiro-Wilk):\n")
+shapiro_high <- shapiro.test(oa_high_vg)
+shapiro_low <- shapiro.test(oa_low_vg)
+cat("OA_High: W =", round(shapiro_high$statistic, 4), ", p =", shapiro_high$p.value)
+if(shapiro_high$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+cat("\n")
+cat("OA_Low: W =", round(shapiro_low$statistic, 4), ", p =", shapiro_low$p.value)
+if(shapiro_low$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+cat("\n\n")
+
+# Check homogeneity of variance with Levene's test
+levene_test <- leveneTest(Video_Game_Experience_Quantified ~ OA_Subgroup, data = vg_data_clean)
+cat("Levene's Test for Homogeneity of Variance:\n")
+cat("F =", round(levene_test$`F value`[1], 4), ", p =", levene_test$`Pr(>F)`[1])
+if(levene_test$`Pr(>F)`[1] < 0.05) cat(" (variances unequal)") else cat(" (variances equal)")
+cat("\n\n")
+
+# Decide which test to use
+use_welch <- levene_test$`Pr(>F)`[1] < 0.05
+use_nonparametric <- shapiro_high$p.value < 0.05 | shapiro_low$p.value < 0.05
+
+if(use_nonparametric) {
+  cat("⚠️ Data violates normality assumption. Using Mann-Whitney U test.\n\n")
+  mw_test <- wilcox.test(oa_high_vg, oa_low_vg, exact = FALSE)
+  cat("Mann-Whitney U Test Results:\n")
+  cat("W statistic =", mw_test$statistic, "\n")
+  cat("p-value =", mw_test$p.value, "\n")
+  
+  # Effect size
+  n1 <- length(oa_high_vg)
+  n2 <- length(oa_low_vg)
+  r_rank_biserial <- 1 - (2*mw_test$statistic) / (n1 * n2)
+  cat("Rank-biserial correlation =", round(r_rank_biserial, 3), "\n")
+  
+  # Report IQR for each subgroup
+  cat("\nIQR by OA subgroup:\n")
+  cat("OA_High: [", quantile(oa_high_vg, 0.25), ", ", quantile(oa_high_vg, 0.75), "]\n", sep = "")
+  cat("OA_Low: [", quantile(oa_low_vg, 0.25), ", ", quantile(oa_low_vg, 0.75), "]\n", sep = "")
+  
+  p_value <- mw_test$p.value
+  
+} else if(use_welch) {
+  cat("Variances are unequal. Using Welch's t-test.\n\n")
+  t_test <- t.test(oa_high_vg, oa_low_vg, var.equal = FALSE)
+  cat("Welch's t-test Results:\n")
+  cat("t =", t_test$statistic, "\n")
+  cat("df =", t_test$parameter, "\n")
+  cat("p-value =", t_test$p.value, "\n")
+  cat("95% CI for difference: [", t_test$conf.int[1], ", ", t_test$conf.int[2], "]\n", sep = "")
+  
+  # Effect size (Cohen's d)
+  pooled_sd <- sqrt((sd(oa_high_vg)^2 + sd(oa_low_vg)^2) / 2)
+  cohens_d <- (mean(oa_high_vg) - mean(oa_low_vg)) / pooled_sd
+  cat("Cohen's d =", round(cohens_d, 3), "\n")
+  
+  p_value <- t_test$p.value
+  
+} else {
+  cat("Assumptions met. Using standard independent samples t-test.\n\n")
+  t_test <- t.test(oa_high_vg, oa_low_vg, var.equal = TRUE)
+  cat("Independent Samples t-test Results:\n")
+  cat("t =", t_test$statistic, "\n")
+  cat("df =", t_test$parameter, "\n")
+  cat("p-value =", t_test$p.value, "\n")
+  cat("95% CI for difference: [", t_test$conf.int[1], ", ", t_test$conf.int[2], "]\n", sep = "")
+  
+  # Effect size (Cohen's d)
+  pooled_sd <- sqrt((sd(oa_high_vg)^2 + sd(oa_low_vg)^2) / 2)
+  cohens_d <- (mean(oa_high_vg) - mean(oa_low_vg)) / pooled_sd
+  cat("Cohen's d =", round(cohens_d, 3), "\n")
+  
+  p_value <- t_test$p.value
+}
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(p_value < 0.05) {
+  cat("Result: SIGNIFICANT difference in video game usage between OA subgroups (p < 0.05)\n")
+  if(mean(oa_high_vg) > mean(oa_low_vg)) {
+    cat("Direction: OA_High plays MORE video games than OA_Low\n")
+  } else {
+    cat("Direction: OA_Low plays MORE video games than OA_High\n")
+  }
+} else {
+  cat("Result: NO significant difference in video game usage between OA subgroups (p >= 0.05)\n")
+}
+```
+
+## Test 5: Weekly Exercise Frequency
+
+```{r test-5-exercise}
+cat("Exercise Frequency (numeric variable)\n\n")
+
+# Summary statistics by subgroup
+exercise_summary <- merged_data %>%
+  group_by(OA_Subgroup) %>%
+  summarise(
+    n = sum(!is.na(Exercise_Quantified)),
+    Mean = mean(Exercise_Quantified, na.rm = TRUE),
+    SD = sd(Exercise_Quantified, na.rm = TRUE),
+    Median = median(Exercise_Quantified, na.rm = TRUE),
+    Q1 = quantile(Exercise_Quantified, 0.25, na.rm = TRUE),
+    Q3 = quantile(Exercise_Quantified, 0.75, na.rm = TRUE),
+    Min = min(Exercise_Quantified, na.rm = TRUE),
+    Max = max(Exercise_Quantified, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(exercise_summary)
+cat("\n")
+
+# Filter out NA values for testing
+exercise_data_clean <- merged_data %>%
+  filter(!is.na(Exercise_Quantified), !is.na(OA_Subgroup))
+
+oa_high_ex <- exercise_data_clean %>% filter(OA_Subgroup == "OA_High") %>% pull(Exercise_Quantified)
+oa_low_ex <- exercise_data_clean %>% filter(OA_Subgroup == "OA_Low") %>% pull(Exercise_Quantified)
+
+# Check normality with Shapiro-Wilk test
+cat("Normality Tests (Shapiro-Wilk):\n")
+shapiro_high <- shapiro.test(oa_high_ex)
+shapiro_low <- shapiro.test(oa_low_ex)
+cat("OA_High: W =", round(shapiro_high$statistic, 4), ", p =", shapiro_high$p.value)
+if(shapiro_high$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+cat("\n")
+cat("OA_Low: W =", round(shapiro_low$statistic, 4), ", p =", shapiro_low$p.value)
+if(shapiro_low$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+cat("\n\n")
+
+# Check homogeneity of variance with Levene's test
+levene_test <- leveneTest(Exercise_Quantified ~ OA_Subgroup, data = exercise_data_clean)
+cat("Levene's Test for Homogeneity of Variance:\n")
+cat("F =", round(levene_test$`F value`[1], 4), ", p =", levene_test$`Pr(>F)`[1])
+if(levene_test$`Pr(>F)`[1] < 0.05) cat(" (variances unequal)") else cat(" (variances equal)")
+cat("\n\n")
+
+# Decide which test to use
+use_welch <- levene_test$`Pr(>F)`[1] < 0.05
+use_nonparametric <- shapiro_high$p.value < 0.05 | shapiro_low$p.value < 0.05
+
+if(use_nonparametric) {
+  cat("⚠️ Data violates normality assumption. Using Mann-Whitney U test.\n\n")
+  mw_test <- wilcox.test(oa_high_ex, oa_low_ex, exact = FALSE)
+  cat("Mann-Whitney U Test Results:\n")
+  cat("W statistic =", mw_test$statistic, "\n")
+  cat("p-value =", mw_test$p.value, "\n")
+  
+  # Effect size
+  n1 <- length(oa_high_ex)
+  n2 <- length(oa_low_ex)
+  r_rank_biserial <- 1 - (2*mw_test$statistic) / (n1 * n2)
+  cat("Rank-biserial correlation =", round(r_rank_biserial, 3), "\n")
+  
+  # Report IQR for each subgroup
+  cat("\nIQR by OA subgroup:\n")
+  cat("OA_High: [", quantile(oa_high_ex, 0.25), ", ", quantile(oa_high_ex, 0.75), "]\n", sep = "")
+  cat("OA_Low: [", quantile(oa_low_ex, 0.25), ", ", quantile(oa_low_ex, 0.75), "]\n", sep = "")
+  
+  p_value <- mw_test$p.value
+  
+} else if(use_welch) {
+  cat("Variances are unequal. Using Welch's t-test.\n\n")
+  t_test <- t.test(oa_high_ex, oa_low_ex, var.equal = FALSE)
+  cat("Welch's t-test Results:\n")
+  cat("t =", t_test$statistic, "\n")
+  cat("df =", t_test$parameter, "\n")
+  cat("p-value =", t_test$p.value, "\n")
+  cat("95% CI for difference: [", t_test$conf.int[1], ", ", t_test$conf.int[2], "]\n", sep = "")
+  
+  # Effect size (Cohen's d)
+  pooled_sd <- sqrt((sd(oa_high_ex)^2 + sd(oa_low_ex)^2) / 2)
+  cohens_d <- (mean(oa_high_ex) - mean(oa_low_ex)) / pooled_sd
+  cat("Cohen's d =", round(cohens_d, 3), "\n")
+  
+  p_value <- t_test$p.value
+  
+} else {
+  cat("Assumptions met. Using standard independent samples t-test.\n\n")
+  t_test <- t.test(oa_high_ex, oa_low_ex, var.equal = TRUE)
+  cat("Independent Samples t-test Results:\n")
+  cat("t =", t_test$statistic, "\n")
+  cat("df =", t_test$parameter, "\n")
+  cat("p-value =", t_test$p.value, "\n")
+  cat("95% CI for difference: [", t_test$conf.int[1], ", ", t_test$conf.int[2], "]\n", sep = "")
+  
+  # Effect size (Cohen's d)
+  pooled_sd <- sqrt((sd(oa_high_ex)^2 + sd(oa_low_ex)^2) / 2)
+  cohens_d <- (mean(oa_high_ex) - mean(oa_low_ex)) / pooled_sd
+  cat("Cohen's d =", round(cohens_d, 3), "\n")
+  
+  p_value <- t_test$p.value
+}
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(p_value < 0.05) {
+  cat("Result: SIGNIFICANT difference in exercise frequency between OA subgroups (p < 0.05)\n")
+  if(mean(oa_high_ex) > mean(oa_low_ex)) {
+    cat("Direction: OA_High exercises MORE than OA_Low\n")
+  } else {
+    cat("Direction: OA_Low exercises MORE than OA_High\n")
+  }
+} else {
+  cat("Result: NO significant difference in exercise frequency between OA subgroups (p >= 0.05)\n")
+}
+```
+
+## Test 6: SBSOD Scores
+
+```{r test-6-sbsod}
+cat("SBSOD: Santa Barbara Sense of Direction Scale\n\n")
+
+# Summary statistics by subgroup
+sbsod_summary <- merged_data %>%
+  group_by(OA_Subgroup) %>%
+  summarise(
+    n = sum(!is.na(SBSOD)),
+    Mean = mean(SBSOD, na.rm = TRUE),
+    SD = sd(SBSOD, na.rm = TRUE),
+    Median = median(SBSOD, na.rm = TRUE),
+    Q1 = quantile(SBSOD, 0.25, na.rm = TRUE),
+    Q3 = quantile(SBSOD, 0.75, na.rm = TRUE),
+    Min = min(SBSOD, na.rm = TRUE),
+    Max = max(SBSOD, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(sbsod_summary)
+cat("\n")
+
+# Filter out NA values for testing
+sbsod_data_clean <- merged_data %>%
+  filter(!is.na(SBSOD), !is.na(OA_Subgroup))
+
+oa_high_sbsod <- sbsod_data_clean %>% filter(OA_Subgroup == "OA_High") %>% pull(SBSOD)
+oa_low_sbsod <- sbsod_data_clean %>% filter(OA_Subgroup == "OA_Low") %>% pull(SBSOD)
+
+# Check normality with Shapiro-Wilk test
+cat("Normality Tests (Shapiro-Wilk):\n")
+shapiro_high <- shapiro.test(oa_high_sbsod)
+shapiro_low <- shapiro.test(oa_low_sbsod)
+cat("OA_High: W =", round(shapiro_high$statistic, 4), ", p =", shapiro_high$p.value)
+if(shapiro_high$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+cat("\n")
+cat("OA_Low: W =", round(shapiro_low$statistic, 4), ", p =", shapiro_low$p.value)
+if(shapiro_low$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+cat("\n\n")
+
+# Check homogeneity of variance with Levene's test
+levene_test <- leveneTest(SBSOD ~ OA_Subgroup, data = sbsod_data_clean)
+cat("Levene's Test for Homogeneity of Variance:\n")
+cat("F =", round(levene_test$`F value`[1], 4), ", p =", levene_test$`Pr(>F)`[1])
+if(levene_test$`Pr(>F)`[1] < 0.05) cat(" (variances unequal)") else cat(" (variances equal)")
+cat("\n\n")
+
+# Decide which test to use
+use_welch <- levene_test$`Pr(>F)`[1] < 0.05
+use_nonparametric <- shapiro_high$p.value < 0.05 | shapiro_low$p.value < 0.05
+
+if(use_nonparametric) {
+  cat("⚠️ Data violates normality assumption. Using Mann-Whitney U test.\n\n")
+  mw_test <- wilcox.test(oa_high_sbsod, oa_low_sbsod, exact = FALSE)
+  cat("Mann-Whitney U Test Results:\n")
+  cat("W statistic =", mw_test$statistic, "\n")
+  cat("p-value =", mw_test$p.value, "\n")
+  
+  # Effect size
+  n1 <- length(oa_high_sbsod)
+  n2 <- length(oa_low_sbsod)
+  r_rank_biserial <- 1 - (2*mw_test$statistic) / (n1 * n2)
+  cat("Rank-biserial correlation =", round(r_rank_biserial, 3), "\n")
+  
+  # Report IQR for each subgroup
+  cat("\nIQR by OA subgroup:\n")
+  cat("OA_High: [", quantile(oa_high_sbsod, 0.25), ", ", quantile(oa_high_sbsod, 0.75), "]\n", sep = "")
+  cat("OA_Low: [", quantile(oa_low_sbsod, 0.25), ", ", quantile(oa_low_sbsod, 0.75), "]\n", sep = "")
+  
+  p_value <- mw_test$p.value
+  
+} else if(use_welch) {
+  cat("Variances are unequal. Using Welch's t-test.\n\n")
+  t_test <- t.test(oa_high_sbsod, oa_low_sbsod, var.equal = FALSE)
+  cat("Welch's t-test Results:\n")
+  cat("t =", t_test$statistic, "\n")
+  cat("df =", t_test$parameter, "\n")
+  cat("p-value =", t_test$p.value, "\n")
+  cat("95% CI for difference: [", t_test$conf.int[1], ", ", t_test$conf.int[2], "]\n", sep = "")
+  
+  # Effect size (Cohen's d)
+  pooled_sd <- sqrt((sd(oa_high_sbsod)^2 + sd(oa_low_sbsod)^2) / 2)
+  cohens_d <- (mean(oa_high_sbsod) - mean(oa_low_sbsod)) / pooled_sd
+  cat("Cohen's d =", round(cohens_d, 3), "\n")
+  
+  p_value <- t_test$p.value
+  
+} else {
+  cat("Assumptions met. Using standard independent samples t-test.\n\n")
+  t_test <- t.test(oa_high_sbsod, oa_low_sbsod, var.equal = TRUE)
+  cat("Independent Samples t-test Results:\n")
+  cat("t =", t_test$statistic, "\n")
+  cat("df =", t_test$parameter, "\n")
+  cat("p-value =", t_test$p.value, "\n")
+  cat("95% CI for difference: [", t_test$conf.int[1], ", ", t_test$conf.int[2], "]\n", sep = "")
+  
+  # Effect size (Cohen's d)
+  pooled_sd <- sqrt((sd(oa_high_sbsod)^2 + sd(oa_low_sbsod)^2) / 2)
+  cohens_d <- (mean(oa_high_sbsod) - mean(oa_low_sbsod)) / pooled_sd
+  cat("Cohen's d =", round(cohens_d, 3), "\n")
+  
+  p_value <- t_test$p.value
+}
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(p_value < 0.05) {
+  cat("Result: SIGNIFICANT difference in SBSOD scores between OA subgroups (p < 0.05)\n")
+  if(mean(oa_high_sbsod) > mean(oa_low_sbsod)) {
+    cat("Direction: OA_High has BETTER sense of direction than OA_Low\n")
+  } else {
+    cat("Direction: OA_Low has BETTER sense of direction than OA_High\n")
+  }
+} else {
+  cat("Result: NO significant difference in SBSOD scores between OA subgroups (p >= 0.05)\n")
+}
+```
+
+## Test 7: PSQI Scores
+
+```{r test-7-psqi}
+cat("PSQI: Pittsburgh Sleep Quality Index\n")
+cat("Note: Higher scores indicate WORSE sleep quality (range 0-21)\n\n")
+
+# Summary statistics by subgroup
+psqi_summary <- merged_data %>%
+  group_by(OA_Subgroup) %>%
+  summarise(
+    n = sum(!is.na(PSQI)),
+    Mean = mean(PSQI, na.rm = TRUE),
+    SD = sd(PSQI, na.rm = TRUE),
+    Median = median(PSQI, na.rm = TRUE),
+    Q1 = quantile(PSQI, 0.25, na.rm = TRUE),
+    Q3 = quantile(PSQI, 0.75, na.rm = TRUE),
+    Min = min(PSQI, na.rm = TRUE),
+    Max = max(PSQI, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(psqi_summary)
+cat("\n")
+
+# Filter out NA values for testing
+psqi_data_clean <- merged_data %>%
+  filter(!is.na(PSQI), !is.na(OA_Subgroup))
+
+oa_high_psqi <- psqi_data_clean %>% filter(OA_Subgroup == "OA_High") %>% pull(PSQI)
+oa_low_psqi <- psqi_data_clean %>% filter(OA_Subgroup == "OA_Low") %>% pull(PSQI)
+
+# Check normality with Shapiro-Wilk test
+cat("Normality Tests (Shapiro-Wilk):\n")
+shapiro_high <- shapiro.test(oa_high_psqi)
+shapiro_low <- shapiro.test(oa_low_psqi)
+cat("OA_High: W =", round(shapiro_high$statistic, 4), ", p =", shapiro_high$p.value)
+if(shapiro_high$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+cat("\n")
+cat("OA_Low: W =", round(shapiro_low$statistic, 4), ", p =", shapiro_low$p.value)
+if(shapiro_low$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+cat("\n\n")
+
+# Check homogeneity of variance with Levene's test
+levene_test <- leveneTest(PSQI ~ OA_Subgroup, data = psqi_data_clean)
+cat("Levene's Test for Homogeneity of Variance:\n")
+cat("F =", round(levene_test$`F value`[1], 4), ", p =", levene_test$`Pr(>F)`[1])
+if(levene_test$`Pr(>F)`[1] < 0.05) cat(" (variances unequal)") else cat(" (variances equal)")
+cat("\n\n")
+
+# Decide which test to use
+use_welch <- levene_test$`Pr(>F)`[1] < 0.05
+use_nonparametric <- shapiro_high$p.value < 0.05 | shapiro_low$p.value < 0.05
+
+if(use_nonparametric) {
+  cat("⚠️ Data violates normality assumption. Using Mann-Whitney U test.\n\n")
+  mw_test <- wilcox.test(oa_high_psqi, oa_low_psqi, exact = FALSE)
+  cat("Mann-Whitney U Test Results:\n")
+  cat("W statistic =", mw_test$statistic, "\n")
+  cat("p-value =", mw_test$p.value, "\n")
+  
+  # Effect size
+  n1 <- length(oa_high_psqi)
+  n2 <- length(oa_low_psqi)
+  r_rank_biserial <- 1 - (2*mw_test$statistic) / (n1 * n2)
+  cat("Rank-biserial correlation =", round(r_rank_biserial, 3), "\n")
+  
+  # Report IQR for each subgroup
+  cat("\nIQR by OA subgroup:\n")
+  cat("OA_High: [", quantile(oa_high_psqi, 0.25), ", ", quantile(oa_high_psqi, 0.75), "]\n", sep = "")
+  cat("OA_Low: [", quantile(oa_low_psqi, 0.25), ", ", quantile(oa_low_psqi, 0.75), "]\n", sep = "")
+  
+  p_value <- mw_test$p.value
+  
+} else if(use_welch) {
+  cat("Variances are unequal. Using Welch's t-test.\n\n")
+  t_test <- t.test(oa_high_psqi, oa_low_psqi, var.equal = FALSE)
+  cat("Welch's t-test Results:\n")
+  cat("t =", t_test$statistic, "\n")
+  cat("df =", t_test$parameter, "\n")
+  cat("p-value =", t_test$p.value, "\n")
+  cat("95% CI for difference: [", t_test$conf.int[1], ", ", t_test$conf.int[2], "]\n", sep = "")
+  
+  # Effect size (Cohen's d)
+  pooled_sd <- sqrt((sd(oa_high_psqi)^2 + sd(oa_low_psqi)^2) / 2)
+  cohens_d <- (mean(oa_high_psqi) - mean(oa_low_psqi)) / pooled_sd
+  cat("Cohen's d =", round(cohens_d, 3), "\n")
+  
+  p_value <- t_test$p.value
+  
+} else {
+  cat("Assumptions met. Using standard independent samples t-test.\n\n")
+  t_test <- t.test(oa_high_psqi, oa_low_psqi, var.equal = TRUE)
+  cat("Independent Samples t-test Results:\n")
+  cat("t =", t_test$statistic, "\n")
+  cat("df =", t_test$parameter, "\n")
+  cat("p-value =", t_test$p.value, "\n")
+  cat("95% CI for difference: [", t_test$conf.int[1], ", ", t_test$conf.int[2], "]\n", sep = "")
+  
+  # Effect size (Cohen's d)
+  pooled_sd <- sqrt((sd(oa_high_psqi)^2 + sd(oa_low_psqi)^2) / 2)
+  cohens_d <- (mean(oa_high_psqi) - mean(oa_low_psqi)) / pooled_sd
+  cat("Cohen's d =", round(cohens_d, 3), "\n")
+  
+  p_value <- t_test$p.value
+}
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(p_value < 0.05) {
+  cat("Result: SIGNIFICANT difference in sleep quality between OA subgroups (p < 0.05)\n")
+  if(mean(oa_high_psqi) > mean(oa_low_psqi)) {
+    cat("Direction: OA_High has WORSE sleep quality than OA_Low\n")
+  } else {
+    cat("Direction: OA_Low has WORSE sleep quality than OA_High\n")
+  }
+} else {
+  cat("Result: NO significant difference in sleep quality between OA subgroups (p >= 0.05)\n")
+}
+```
+
+## Test 8: Trails Making Test A Performance
+
+```{r test-8-trails-a}
+cat("Trails Making Test A: Completion Time\n")
+cat("Note: Lower completion time = BETTER performance\n\n")
+
+# Summary statistics by subgroup
+trails_summary <- merged_data %>%
+  group_by(OA_Subgroup) %>%
+  summarise(
+    n = sum(!is.na(Trails_A_CT)),
+    Mean = mean(Trails_A_CT, na.rm = TRUE),
+    SD = sd(Trails_A_CT, na.rm = TRUE),
+    Median = median(Trails_A_CT, na.rm = TRUE),
+    Q1 = quantile(Trails_A_CT, 0.25, na.rm = TRUE),
+    Q3 = quantile(Trails_A_CT, 0.75, na.rm = TRUE),
+    Min = min(Trails_A_CT, na.rm = TRUE),
+    Max = max(Trails_A_CT, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(trails_summary)
+cat("\n")
+
+# Filter out NA values for testing
+trails_data_clean <- merged_data %>%
+  filter(!is.na(Trails_A_CT), !is.na(OA_Subgroup))
+
+oa_high_trails <- trails_data_clean %>% filter(OA_Subgroup == "OA_High") %>% pull(Trails_A_CT)
+oa_low_trails <- trails_data_clean %>% filter(OA_Subgroup == "OA_Low") %>% pull(Trails_A_CT)
+
+# Check normality with Shapiro-Wilk test
+cat("Normality Tests (Shapiro-Wilk):\n")
+shapiro_high <- shapiro.test(oa_high_trails)
+shapiro_low <- shapiro.test(oa_low_trails)
+cat("OA_High: W =", round(shapiro_high$statistic, 4), ", p =", shapiro_high$p.value)
+if(shapiro_high$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+cat("\n")
+cat("OA_Low: W =", round(shapiro_low$statistic, 4), ", p =", shapiro_low$p.value)
+if(shapiro_low$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+cat("\n\n")
+
+# Check homogeneity of variance with Levene's test
+levene_test <- leveneTest(Trails_A_CT ~ OA_Subgroup, data = trails_data_clean)
+cat("Levene's Test for Homogeneity of Variance:\n")
+cat("F =", round(levene_test$`F value`[1], 4), ", p =", levene_test$`Pr(>F)`[1])
+if(levene_test$`Pr(>F)`[1] < 0.05) cat(" (variances unequal)") else cat(" (variances equal)")
+cat("\n\n")
+
+# Decide which test to use
+use_welch <- levene_test$`Pr(>F)`[1] < 0.05
+use_nonparametric <- shapiro_high$p.value < 0.05 | shapiro_low$p.value < 0.05
+
+if(use_nonparametric) {
+  cat("⚠️ Data violates normality assumption. Using Mann-Whitney U test.\n\n")
+  mw_test <- wilcox.test(oa_high_trails, oa_low_trails, exact = FALSE)
+  cat("Mann-Whitney U Test Results:\n")
+  cat("W statistic =", mw_test$statistic, "\n")
+  cat("p-value =", mw_test$p.value, "\n")
+  
+  # Effect size
+  n1 <- length(oa_high_trails)
+  n2 <- length(oa_low_trails)
+  r_rank_biserial <- 1 - (2*mw_test$statistic) / (n1 * n2)
+  cat("Rank-biserial correlation =", round(r_rank_biserial, 3), "\n")
+  
+  # Report IQR for each subgroup
+  cat("\nIQR by OA subgroup:\n")
+  cat("OA_High: [", quantile(oa_high_trails, 0.25), ", ", quantile(oa_high_trails, 0.75), "]\n", sep = "")
+  cat("OA_Low: [", quantile(oa_low_trails, 0.25), ", ", quantile(oa_low_trails, 0.75), "]\n", sep = "")
+  
+  p_value <- mw_test$p.value
+  
+} else if(use_welch) {
+  cat("Variances are unequal. Using Welch's t-test.\n\n")
+  t_test <- t.test(oa_high_trails, oa_low_trails, var.equal = FALSE)
+  cat("Welch's t-test Results:\n")
+  cat("t =", t_test$statistic, "\n")
+  cat("df =", t_test$parameter, "\n")
+  cat("p-value =", t_test$p.value, "\n")
+  cat("95% CI for difference: [", t_test$conf.int[1], ", ", t_test$conf.int[2], "]\n", sep = "")
+  
+  # Effect size (Cohen's d)
+  pooled_sd <- sqrt((sd(oa_high_trails)^2 + sd(oa_low_trails)^2) / 2)
+  cohens_d <- (mean(oa_high_trails) - mean(oa_low_trails)) / pooled_sd
+  cat("Cohen's d =", round(cohens_d, 3), "\n")
+  
+  p_value <- t_test$p.value
+  
+} else {
+  cat("Assumptions met. Using standard independent samples t-test.\n\n")
+  t_test <- t.test(oa_high_trails, oa_low_trails, var.equal = TRUE)
+  cat("Independent Samples t-test Results:\n")
+  cat("t =", t_test$statistic, "\n")
+  cat("df =", t_test$parameter, "\n")
+  cat("p-value =", t_test$p.value, "\n")
+  cat("95% CI for difference: [", t_test$conf.int[1], ", ", t_test$conf.int[2], "]\n", sep = "")
+  
+  # Effect size (Cohen's d)
+  pooled_sd <- sqrt((sd(oa_high_trails)^2 + sd(oa_low_trails)^2) / 2)
+  cohens_d <- (mean(oa_high_trails) - mean(oa_low_trails)) / pooled_sd
+  cat("Cohen's d =", round(cohens_d, 3), "\n")
+  
+  p_value <- t_test$p.value
+}
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(p_value < 0.05) {
+  cat("Result: SIGNIFICANT difference in Trails A performance between OA subgroups (p < 0.05)\n")
+  if(mean(oa_high_trails) < mean(oa_low_trails)) {
+    cat("Direction: OA_High is FASTER (better) than OA_Low\n")
+  } else {
+    cat("Direction: OA_Low is FASTER (better) than OA_High\n")
+  }
+} else {
+  cat("Result: NO significant difference in Trails A performance between OA subgroups (p >= 0.05)\n")
+}
+```
+
+## Test 9: Trails Making Test B Performance
+
+```{r test-9-trails-b}
+cat("Trails Making Test B: Completion Time\n")
+cat("Note: Lower completion time = BETTER performance\n")
+cat("Trails B measures executive function and set-shifting\n\n")
+
+# Summary statistics by subgroup
+trails_b_summary <- merged_data %>%
+  group_by(OA_Subgroup) %>%
+  summarise(
+    n = sum(!is.na(Trails_B_CT)),
+    Mean = mean(Trails_B_CT, na.rm = TRUE),
+    SD = sd(Trails_B_CT, na.rm = TRUE),
+    Median = median(Trails_B_CT, na.rm = TRUE),
+    Q1 = quantile(Trails_B_CT, 0.25, na.rm = TRUE),
+    Q3 = quantile(Trails_B_CT, 0.75, na.rm = TRUE),
+    Min = min(Trails_B_CT, na.rm = TRUE),
+    Max = max(Trails_B_CT, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(trails_b_summary)
+cat("\n")
+
+# Filter out NA values for testing
+trails_b_data_clean <- merged_data %>%
+  filter(!is.na(Trails_B_CT), !is.na(OA_Subgroup))
+
+oa_high_trails_b <- trails_b_data_clean %>% filter(OA_Subgroup == "OA_High") %>% pull(Trails_B_CT)
+oa_low_trails_b <- trails_b_data_clean %>% filter(OA_Subgroup == "OA_Low") %>% pull(Trails_B_CT)
+
+# Check normality with Shapiro-Wilk test
+cat("Normality Tests (Shapiro-Wilk):\n")
+shapiro_high <- shapiro.test(oa_high_trails_b)
+shapiro_low <- shapiro.test(oa_low_trails_b)
+cat("OA_High: W =", round(shapiro_high$statistic, 4), ", p =", shapiro_high$p.value)
+if(shapiro_high$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+cat("\n")
+cat("OA_Low: W =", round(shapiro_low$statistic, 4), ", p =", shapiro_low$p.value)
+if(shapiro_low$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+cat("\n\n")
+
+# Check homogeneity of variance with Levene's test
+levene_test <- leveneTest(Trails_B_CT ~ OA_Subgroup, data = trails_b_data_clean)
+cat("Levene's Test for Homogeneity of Variance:\n")
+cat("F =", round(levene_test$`F value`[1], 4), ", p =", levene_test$`Pr(>F)`[1])
+if(levene_test$`Pr(>F)`[1] < 0.05) cat(" (variances unequal)") else cat(" (variances equal)")
+cat("\n\n")
+
+# Decide which test to use
+use_welch <- levene_test$`Pr(>F)`[1] < 0.05
+use_nonparametric <- shapiro_high$p.value < 0.05 | shapiro_low$p.value < 0.05
+
+if(use_nonparametric) {
+  cat("⚠️ Data violates normality assumption. Using Mann-Whitney U test.\n\n")
+  mw_test <- wilcox.test(oa_high_trails_b, oa_low_trails_b, exact = FALSE)
+  cat("Mann-Whitney U Test Results:\n")
+  cat("W statistic =", mw_test$statistic, "\n")
+  cat("p-value =", mw_test$p.value, "\n")
+  
+  # Effect size
+  n1 <- length(oa_high_trails_b)
+  n2 <- length(oa_low_trails_b)
+  r_rank_biserial <- 1 - (2*mw_test$statistic) / (n1 * n2)
+  cat("Rank-biserial correlation =", round(r_rank_biserial, 3), "\n")
+  
+  # Report IQR for each subgroup
+  cat("\nIQR by OA subgroup:\n")
+  cat("OA_High: [", quantile(oa_high_trails_b, 0.25), ", ", quantile(oa_high_trails_b, 0.75), "]\n", sep = "")
+  cat("OA_Low: [", quantile(oa_low_trails_b, 0.25), ", ", quantile(oa_low_trails_b, 0.75), "]\n", sep = "")
+  
+  p_value <- mw_test$p.value
+  
+} else if(use_welch) {
+  cat("Variances are unequal. Using Welch's t-test.\n\n")
+  t_test <- t.test(oa_high_trails_b, oa_low_trails_b, var.equal = FALSE)
+  cat("Welch's t-test Results:\n")
+  cat("t =", t_test$statistic, "\n")
+  cat("df =", t_test$parameter, "\n")
+  cat("p-value =", t_test$p.value, "\n")
+  cat("95% CI for difference: [", t_test$conf.int[1], ", ", t_test$conf.int[2], "]\n", sep = "")
+  
+  # Effect size (Cohen's d)
+  pooled_sd <- sqrt((sd(oa_high_trails_b)^2 + sd(oa_low_trails_b)^2) / 2)
+  cohens_d <- (mean(oa_high_trails_b) - mean(oa_low_trails_b)) / pooled_sd
+  cat("Cohen's d =", round(cohens_d, 3), "\n")
+  
+  p_value <- t_test$p.value
+  
+} else {
+  cat("Assumptions met. Using standard independent samples t-test.\n\n")
+  t_test <- t.test(oa_high_trails_b, oa_low_trails_b, var.equal = TRUE)
+  cat("Independent Samples t-test Results:\n")
+  cat("t =", t_test$statistic, "\n")
+  cat("df =", t_test$parameter, "\n")
+  cat("p-value =", t_test$p.value, "\n")
+  cat("95% CI for difference: [", t_test$conf.int[1], ", ", t_test$conf.int[2], "]\n", sep = "")
+  
+  # Effect size (Cohen's d)
+  pooled_sd <- sqrt((sd(oa_high_trails_b)^2 + sd(oa_low_trails_b)^2) / 2)
+  cohens_d <- (mean(oa_high_trails_b) - mean(oa_low_trails_b)) / pooled_sd
+  cat("Cohen's d =", round(cohens_d, 3), "\n")
+  
+  p_value <- t_test$p.value
+}
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(p_value < 0.05) {
+  cat("Result: SIGNIFICANT difference in Trails B performance between OA subgroups (p < 0.05)\n")
+  if(mean(oa_high_trails_b) < mean(oa_low_trails_b)) {
+    cat("Direction: OA_High is FASTER (better) than OA_Low\n")
+  } else {
+    cat("Direction: OA_Low is FASTER (better) than OA_High\n")
+  }
+} else {
+  cat("Result: NO significant difference in Trails B performance between OA subgroups (p >= 0.05)\n")
+}
+```
+
+## Test 10: Trails B-A Difference (Cognitive Switching Cost)
+
+```{r test-10-trails-ba-diff}
+cat("Trails B-A Difference: Cognitive Switching Cost\n")
+cat("Note: Higher values = GREATER switching cost (worse executive function)\n")
+cat("This measure isolates set-shifting ability from processing speed\n\n")
+
+# Calculate B-A difference
+merged_data <- merged_data %>%
+  mutate(Trails_BA_Diff = Trails_B_CT - Trails_A_CT)
+
+# Summary statistics by subgroup
+trails_ba_summary <- merged_data %>%
+  group_by(OA_Subgroup) %>%
+  summarise(
+    n = sum(!is.na(Trails_BA_Diff)),
+    Mean = mean(Trails_BA_Diff, na.rm = TRUE),
+    SD = sd(Trails_BA_Diff, na.rm = TRUE),
+    Median = median(Trails_BA_Diff, na.rm = TRUE),
+    Q1 = quantile(Trails_BA_Diff, 0.25, na.rm = TRUE),
+    Q3 = quantile(Trails_BA_Diff, 0.75, na.rm = TRUE),
+    Min = min(Trails_BA_Diff, na.rm = TRUE),
+    Max = max(Trails_BA_Diff, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(trails_ba_summary)
+cat("\n")
+
+# Filter out NA values for testing
+trails_ba_data_clean <- merged_data %>%
+  filter(!is.na(Trails_BA_Diff), !is.na(OA_Subgroup))
+
+oa_high_trails_ba <- trails_ba_data_clean %>% filter(OA_Subgroup == "OA_High") %>% pull(Trails_BA_Diff)
+oa_low_trails_ba <- trails_ba_data_clean %>% filter(OA_Subgroup == "OA_Low") %>% pull(Trails_BA_Diff)
+
+# Check normality with Shapiro-Wilk test
+cat("Normality Tests (Shapiro-Wilk):\n")
+shapiro_high <- shapiro.test(oa_high_trails_ba)
+shapiro_low <- shapiro.test(oa_low_trails_ba)
+cat("OA_High: W =", round(shapiro_high$statistic, 4), ", p =", shapiro_high$p.value)
+if(shapiro_high$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+cat("\n")
+cat("OA_Low: W =", round(shapiro_low$statistic, 4), ", p =", shapiro_low$p.value)
+if(shapiro_low$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+cat("\n\n")
+
+# Check homogeneity of variance with Levene's test
+levene_test <- leveneTest(Trails_BA_Diff ~ OA_Subgroup, data = trails_ba_data_clean)
+cat("Levene's Test for Homogeneity of Variance:\n")
+cat("F =", round(levene_test$`F value`[1], 4), ", p =", levene_test$`Pr(>F)`[1])
+if(levene_test$`Pr(>F)`[1] < 0.05) cat(" (variances unequal)") else cat(" (variances equal)")
+cat("\n\n")
+
+# Decide which test to use
+use_welch <- levene_test$`Pr(>F)`[1] < 0.05
+use_nonparametric <- shapiro_high$p.value < 0.05 | shapiro_low$p.value < 0.05
+
+if(use_nonparametric) {
+  cat("⚠️ Data violates normality assumption. Using Mann-Whitney U test.\n\n")
+  mw_test <- wilcox.test(oa_high_trails_ba, oa_low_trails_ba, exact = FALSE)
+  cat("Mann-Whitney U Test Results:\n")
+  cat("W statistic =", mw_test$statistic, "\n")
+  cat("p-value =", mw_test$p.value, "\n")
+  
+  # Effect size
+  n1 <- length(oa_high_trails_ba)
+  n2 <- length(oa_low_trails_ba)
+  r_rank_biserial <- 1 - (2*mw_test$statistic) / (n1 * n2)
+  cat("Rank-biserial correlation =", round(r_rank_biserial, 3), "\n")
+  
+  # Report IQR for each subgroup
+  cat("\nIQR by OA subgroup:\n")
+  cat("OA_High: [", quantile(oa_high_trails_ba, 0.25), ", ", quantile(oa_high_trails_ba, 0.75), "]\n", sep = "")
+  cat("OA_Low: [", quantile(oa_low_trails_ba, 0.25), ", ", quantile(oa_low_trails_ba, 0.75), "]\n", sep = "")
+  
+  p_value <- mw_test$p.value
+  
+} else if(use_welch) {
+  cat("Variances are unequal. Using Welch's t-test.\n\n")
+  t_test <- t.test(oa_high_trails_ba, oa_low_trails_ba, var.equal = FALSE)
+  cat("Welch's t-test Results:\n")
+  cat("t =", t_test$statistic, "\n")
+  cat("df =", t_test$parameter, "\n")
+  cat("p-value =", t_test$p.value, "\n")
+  cat("95% CI for difference: [", t_test$conf.int[1], ", ", t_test$conf.int[2], "]\n", sep = "")
+  
+  # Effect size (Cohen's d)
+  pooled_sd <- sqrt((sd(oa_high_trails_ba)^2 + sd(oa_low_trails_ba)^2) / 2)
+  cohens_d <- (mean(oa_high_trails_ba) - mean(oa_low_trails_ba)) / pooled_sd
+  cat("Cohen's d =", round(cohens_d, 3), "\n")
+  
+  p_value <- t_test$p.value
+  
+} else {
+  cat("Assumptions met. Using standard independent samples t-test.\n\n")
+  t_test <- t.test(oa_high_trails_ba, oa_low_trails_ba, var.equal = TRUE)
+  cat("Independent Samples t-test Results:\n")
+  cat("t =", t_test$statistic, "\n")
+  cat("df =", t_test$parameter, "\n")
+  cat("p-value =", t_test$p.value, "\n")
+  cat("95% CI for difference: [", t_test$conf.int[1], ", ", t_test$conf.int[2], "]\n", sep = "")
+  
+  # Effect size (Cohen's d)
+  pooled_sd <- sqrt((sd(oa_high_trails_ba)^2 + sd(oa_low_trails_ba)^2) / 2)
+  cohens_d <- (mean(oa_high_trails_ba) - mean(oa_low_trails_ba)) / pooled_sd
+  cat("Cohen's d =", round(cohens_d, 3), "\n")
+  
+  p_value <- t_test$p.value
+}
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(p_value < 0.05) {
+  cat("Result: SIGNIFICANT difference in cognitive switching cost between OA subgroups (p < 0.05)\n")
+  if(mean(oa_high_trails_ba) < mean(oa_low_trails_ba)) {
+    cat("Direction: OA_High has LOWER switching cost (better executive function) than OA_Low\n")
+  } else {
+    cat("Direction: OA_Low has LOWER switching cost (better executive function) than OA_High\n")
+  }
+} else {
+  cat("Result: NO significant difference in cognitive switching cost between OA subgroups (p >= 0.05)\n")
+}
+```
+
+## Test 11: Corsi Block Scores
+
+```{r test-11-corsi}
+cat("Corsi Block Test: Visuospatial Working Memory\n")
+cat("Using: Corsi_Score_Total\n")
+cat("Note: Higher scores = BETTER visuospatial working memory\n\n")
+
+# Summary statistics by subgroup
+corsi_summary <- merged_data %>%
+  group_by(OA_Subgroup) %>%
+  summarise(
+    n = sum(!is.na(Corsi_Score_Total)),
+    Mean = mean(Corsi_Score_Total, na.rm = TRUE),
+    SD = sd(Corsi_Score_Total, na.rm = TRUE),
+    Median = median(Corsi_Score_Total, na.rm = TRUE),
+    Q1 = quantile(Corsi_Score_Total, 0.25, na.rm = TRUE),
+    Q3 = quantile(Corsi_Score_Total, 0.75, na.rm = TRUE),
+    Min = min(Corsi_Score_Total, na.rm = TRUE),
+    Max = max(Corsi_Score_Total, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(corsi_summary)
+cat("\n")
+
+# Filter out NA values for testing
+corsi_data_clean <- merged_data %>%
+  filter(!is.na(Corsi_Score_Total), !is.na(OA_Subgroup))
+
+oa_high_corsi <- corsi_data_clean %>% filter(OA_Subgroup == "OA_High") %>% pull(Corsi_Score_Total)
+oa_low_corsi <- corsi_data_clean %>% filter(OA_Subgroup == "OA_Low") %>% pull(Corsi_Score_Total)
+
+# Check normality with Shapiro-Wilk test
+cat("Normality Tests (Shapiro-Wilk):\n")
+shapiro_high <- shapiro.test(oa_high_corsi)
+shapiro_low <- shapiro.test(oa_low_corsi)
+cat("OA_High: W =", round(shapiro_high$statistic, 4), ", p =", shapiro_high$p.value)
+if(shapiro_high$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+cat("\n")
+cat("OA_Low: W =", round(shapiro_low$statistic, 4), ", p =", shapiro_low$p.value)
+if(shapiro_low$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+cat("\n\n")
+
+# Check homogeneity of variance with Levene's test
+levene_test <- leveneTest(Corsi_Score_Total ~ OA_Subgroup, data = corsi_data_clean)
+cat("Levene's Test for Homogeneity of Variance:\n")
+cat("F =", round(levene_test$`F value`[1], 4), ", p =", levene_test$`Pr(>F)`[1])
+if(levene_test$`Pr(>F)`[1] < 0.05) cat(" (variances unequal)") else cat(" (variances equal)")
+cat("\n\n")
+
+# Decide which test to use
+use_welch <- levene_test$`Pr(>F)`[1] < 0.05
+use_nonparametric <- shapiro_high$p.value < 0.05 | shapiro_low$p.value < 0.05
+
+if(use_nonparametric) {
+  cat("⚠️ Data violates normality assumption. Using Mann-Whitney U test.\n\n")
+  mw_test <- wilcox.test(oa_high_corsi, oa_low_corsi, exact = FALSE)
+  cat("Mann-Whitney U Test Results:\n")
+  cat("W statistic =", mw_test$statistic, "\n")
+  cat("p-value =", mw_test$p.value, "\n")
+  
+  # Effect size
+  n1 <- length(oa_high_corsi)
+  n2 <- length(oa_low_corsi)
+  r_rank_biserial <- 1 - (2*mw_test$statistic) / (n1 * n2)
+  cat("Rank-biserial correlation =", round(r_rank_biserial, 3), "\n")
+  
+  # Report IQR for each subgroup
+  cat("\nIQR by OA subgroup:\n")
+  cat("OA_High: [", quantile(oa_high_corsi, 0.25), ", ", quantile(oa_high_corsi, 0.75), "]\n", sep = "")
+  cat("OA_Low: [", quantile(oa_low_corsi, 0.25), ", ", quantile(oa_low_corsi, 0.75), "]\n", sep = "")
+  
+  p_value <- mw_test$p.value
+  
+} else if(use_welch) {
+  cat("Variances are unequal. Using Welch's t-test.\n\n")
+  t_test <- t.test(oa_high_corsi, oa_low_corsi, var.equal = FALSE)
+  cat("Welch's t-test Results:\n")
+  cat("t =", t_test$statistic, "\n")
+  cat("df =", t_test$parameter, "\n")
+  cat("p-value =", t_test$p.value, "\n")
+  cat("95% CI for difference: [", t_test$conf.int[1], ", ", t_test$conf.int[2], "]\n", sep = "")
+  
+  # Effect size (Cohen's d)
+  pooled_sd <- sqrt((sd(oa_high_corsi)^2 + sd(oa_low_corsi)^2) / 2)
+  cohens_d <- (mean(oa_high_corsi) - mean(oa_low_corsi)) / pooled_sd
+  cat("Cohen's d =", round(cohens_d, 3), "\n")
+  
+  p_value <- t_test$p.value
+  
+} else {
+  cat("Assumptions met. Using standard independent samples t-test.\n\n")
+  t_test <- t.test(oa_high_corsi, oa_low_corsi, var.equal = TRUE)
+  cat("Independent Samples t-test Results:\n")
+  cat("t =", t_test$statistic, "\n")
+  cat("df =", t_test$parameter, "\n")
+  cat("p-value =", t_test$p.value, "\n")
+  cat("95% CI for difference: [", t_test$conf.int[1], ", ", t_test$conf.int[2], "]\n", sep = "")
+  
+  # Effect size (Cohen's d)
+  pooled_sd <- sqrt((sd(oa_high_corsi)^2 + sd(oa_low_corsi)^2) / 2)
+  cohens_d <- (mean(oa_high_corsi) - mean(oa_low_corsi)) / pooled_sd
+  cat("Cohen's d =", round(cohens_d, 3), "\n")
+  
+  p_value <- t_test$p.value
+}
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(p_value < 0.05) {
+  cat("Result: SIGNIFICANT difference in Corsi Block performance between OA subgroups (p < 0.05)\n")
+  if(mean(oa_high_corsi) > mean(oa_low_corsi)) {
+    cat("Direction: OA_High has BETTER visuospatial working memory than OA_Low\n")
+  } else {
+    cat("Direction: OA_Low has BETTER visuospatial working memory than OA_High\n")
+  }
+} else {
+  cat("Result: NO significant difference in Corsi Block performance between OA subgroups (p >= 0.05)\n")
+}
+```
+
+## Test 12: Pre-VR SSQ Scores
+
+```{r test-12-ssq-pre}
+cat("SSQ Pre: Simulator Sickness Questionnaire - Baseline\n")
+cat("Note: Higher scores = MORE simulator sickness symptoms\n\n")
+
+# Summary statistics by subgroup
+ssq_pre_summary <- merged_data %>%
+  group_by(OA_Subgroup) %>%
+  summarise(
+    n = sum(!is.na(SSQ_Pre)),
+    Mean = mean(SSQ_Pre, na.rm = TRUE),
+    SD = sd(SSQ_Pre, na.rm = TRUE),
+    Median = median(SSQ_Pre, na.rm = TRUE),
+    Q1 = quantile(SSQ_Pre, 0.25, na.rm = TRUE),
+    Q3 = quantile(SSQ_Pre, 0.75, na.rm = TRUE),
+    Min = min(SSQ_Pre, na.rm = TRUE),
+    Max = max(SSQ_Pre, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(ssq_pre_summary)
+cat("\n")
+
+# Filter out NA values for testing
+ssq_pre_data_clean <- merged_data %>%
+  filter(!is.na(SSQ_Pre), !is.na(OA_Subgroup))
+
+oa_high_ssq_pre <- ssq_pre_data_clean %>% filter(OA_Subgroup == "OA_High") %>% pull(SSQ_Pre)
+oa_low_ssq_pre <- ssq_pre_data_clean %>% filter(OA_Subgroup == "OA_Low") %>% pull(SSQ_Pre)
+
+# Check normality with Shapiro-Wilk test
+cat("Normality Tests (Shapiro-Wilk):\n")
+shapiro_high <- shapiro.test(oa_high_ssq_pre)
+shapiro_low <- shapiro.test(oa_low_ssq_pre)
+cat("OA_High: W =", round(shapiro_high$statistic, 4), ", p =", shapiro_high$p.value)
+if(shapiro_high$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+cat("\n")
+cat("OA_Low: W =", round(shapiro_low$statistic, 4), ", p =", shapiro_low$p.value)
+if(shapiro_low$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+cat("\n\n")
+
+# Check homogeneity of variance with Levene's test
+levene_test <- leveneTest(SSQ_Pre ~ OA_Subgroup, data = ssq_pre_data_clean)
+cat("Levene's Test for Homogeneity of Variance:\n")
+cat("F =", round(levene_test$`F value`[1], 4), ", p =", levene_test$`Pr(>F)`[1])
+if(levene_test$`Pr(>F)`[1] < 0.05) cat(" (variances unequal)") else cat(" (variances equal)")
+cat("\n\n")
+
+# Decide which test to use
+use_welch <- levene_test$`Pr(>F)`[1] < 0.05
+use_nonparametric <- shapiro_high$p.value < 0.05 | shapiro_low$p.value < 0.05
+
+if(use_nonparametric) {
+  cat("⚠️ Data violates normality assumption. Using Mann-Whitney U test.\n\n")
+  mw_test <- wilcox.test(oa_high_ssq_pre, oa_low_ssq_pre, exact = FALSE)
+  cat("Mann-Whitney U Test Results:\n")
+  cat("W statistic =", mw_test$statistic, "\n")
+  cat("p-value =", mw_test$p.value, "\n")
+  
+  # Effect size
+  n1 <- length(oa_high_ssq_pre)
+  n2 <- length(oa_low_ssq_pre)
+  r_rank_biserial <- 1 - (2*mw_test$statistic) / (n1 * n2)
+  cat("Rank-biserial correlation =", round(r_rank_biserial, 3), "\n")
+  
+  # Report IQR for each subgroup
+  cat("\nIQR by OA subgroup:\n")
+  cat("OA_High: [", quantile(oa_high_ssq_pre, 0.25), ", ", quantile(oa_high_ssq_pre, 0.75), "]\n", sep = "")
+  cat("OA_Low: [", quantile(oa_low_ssq_pre, 0.25), ", ", quantile(oa_low_ssq_pre, 0.75), "]\n", sep = "")
+  
+  p_value <- mw_test$p.value
+  
+} else if(use_welch) {
+  cat("Variances are unequal. Using Welch's t-test.\n\n")
+  t_test <- t.test(oa_high_ssq_pre, oa_low_ssq_pre, var.equal = FALSE)
+  cat("Welch's t-test Results:\n")
+  cat("t =", t_test$statistic, "\n")
+  cat("df =", t_test$parameter, "\n")
+  cat("p-value =", t_test$p.value, "\n")
+  cat("95% CI for difference: [", t_test$conf.int[1], ", ", t_test$conf.int[2], "]\n", sep = "")
+  
+  # Effect size (Cohen's d)
+  pooled_sd <- sqrt((sd(oa_high_ssq_pre)^2 + sd(oa_low_ssq_pre)^2) / 2)
+  cohens_d <- (mean(oa_high_ssq_pre) - mean(oa_low_ssq_pre)) / pooled_sd
+  cat("Cohen's d =", round(cohens_d, 3), "\n")
+  
+  p_value <- t_test$p.value
+  
+} else {
+  cat("Assumptions met. Using standard independent samples t-test.\n\n")
+  t_test <- t.test(oa_high_ssq_pre, oa_low_ssq_pre, var.equal = TRUE)
+  cat("Independent Samples t-test Results:\n")
+  cat("t =", t_test$statistic, "\n")
+  cat("df =", t_test$parameter, "\n")
+  cat("p-value =", t_test$p.value, "\n")
+  cat("95% CI for difference: [", t_test$conf.int[1], ", ", t_test$conf.int[2], "]\n", sep = "")
+  
+  # Effect size (Cohen's d)
+  pooled_sd <- sqrt((sd(oa_high_ssq_pre)^2 + sd(oa_low_ssq_pre)^2) / 2)
+  cohens_d <- (mean(oa_high_ssq_pre) - mean(oa_low_ssq_pre)) / pooled_sd
+  cat("Cohen's d =", round(cohens_d, 3), "\n")
+  
+  p_value <- t_test$p.value
+}
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(p_value < 0.05) {
+  cat("Result: SIGNIFICANT difference in baseline SSQ between OA subgroups (p < 0.05)\n")
+  if(mean(oa_high_ssq_pre) > mean(oa_low_ssq_pre)) {
+    cat("Direction: OA_High has MORE baseline symptoms than OA_Low\n")
+  } else {
+    cat("Direction: OA_Low has MORE baseline symptoms than OA_High\n")
+  }
+} else {
+  cat("Result: NO significant difference in baseline SSQ between OA subgroups (p >= 0.05)\n")
+  cat("(This is expected - both subgroups should be similar before VR exposure)\n")
+}
+```
+
+## Test 13: Post-VR SSQ Scores
+
+```{r test-13-ssq-post}
+cat("SSQ Post: Simulator Sickness Questionnaire - After VR\n")
+cat("Note: Higher scores = MORE simulator sickness symptoms\n\n")
+
+# Summary statistics by subgroup
+ssq_post_summary <- merged_data %>%
+  group_by(OA_Subgroup) %>%
+  summarise(
+    n = sum(!is.na(SSQ_Post)),
+    Mean = mean(SSQ_Post, na.rm = TRUE),
+    SD = sd(SSQ_Post, na.rm = TRUE),
+    Median = median(SSQ_Post, na.rm = TRUE),
+    Q1 = quantile(SSQ_Post, 0.25, na.rm = TRUE),
+    Q3 = quantile(SSQ_Post, 0.75, na.rm = TRUE),
+    Min = min(SSQ_Post, na.rm = TRUE),
+    Max = max(SSQ_Post, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(ssq_post_summary)
+cat("\n")
+
+# Filter out NA values for testing
+ssq_post_data_clean <- merged_data %>%
+  filter(!is.na(SSQ_Post), !is.na(OA_Subgroup))
+
+oa_high_ssq_post <- ssq_post_data_clean %>% filter(OA_Subgroup == "OA_High") %>% pull(SSQ_Post)
+oa_low_ssq_post <- ssq_post_data_clean %>% filter(OA_Subgroup == "OA_Low") %>% pull(SSQ_Post)
+
+# Check normality with Shapiro-Wilk test
+cat("Normality Tests (Shapiro-Wilk):\n")
+shapiro_high <- shapiro.test(oa_high_ssq_post)
+shapiro_low <- shapiro.test(oa_low_ssq_post)
+cat("OA_High: W =", round(shapiro_high$statistic, 4), ", p =", shapiro_high$p.value)
+if(shapiro_high$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+cat("\n")
+cat("OA_Low: W =", round(shapiro_low$statistic, 4), ", p =", shapiro_low$p.value)
+if(shapiro_low$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+cat("\n\n")
+
+# Check homogeneity of variance with Levene's test
+levene_test <- leveneTest(SSQ_Post ~ OA_Subgroup, data = ssq_post_data_clean)
+cat("Levene's Test for Homogeneity of Variance:\n")
+cat("F =", round(levene_test$`F value`[1], 4), ", p =", levene_test$`Pr(>F)`[1])
+if(levene_test$`Pr(>F)`[1] < 0.05) cat(" (variances unequal)") else cat(" (variances equal)")
+cat("\n\n")
+
+# Decide which test to use
+use_welch <- levene_test$`Pr(>F)`[1] < 0.05
+use_nonparametric <- shapiro_high$p.value < 0.05 | shapiro_low$p.value < 0.05
+
+if(use_nonparametric) {
+  cat("⚠️ Data violates normality assumption. Using Mann-Whitney U test.\n\n")
+  mw_test <- wilcox.test(oa_high_ssq_post, oa_low_ssq_post, exact = FALSE)
+  cat("Mann-Whitney U Test Results:\n")
+  cat("W statistic =", mw_test$statistic, "\n")
+  cat("p-value =", mw_test$p.value, "\n")
+  
+  # Effect size
+  n1 <- length(oa_high_ssq_post)
+  n2 <- length(oa_low_ssq_post)
+  r_rank_biserial <- 1 - (2*mw_test$statistic) / (n1 * n2)
+  cat("Rank-biserial correlation =", round(r_rank_biserial, 3), "\n")
+  
+  # Report IQR for each subgroup
+  cat("\nIQR by OA subgroup:\n")
+  cat("OA_High: [", quantile(oa_high_ssq_post, 0.25), ", ", quantile(oa_high_ssq_post, 0.75), "]\n", sep = "")
+  cat("OA_Low: [", quantile(oa_low_ssq_post, 0.25), ", ", quantile(oa_low_ssq_post, 0.75), "]\n", sep = "")
+  
+  p_value <- mw_test$p.value
+  
+} else if(use_welch) {
+  cat("Variances are unequal. Using Welch's t-test.\n\n")
+  t_test <- t.test(oa_high_ssq_post, oa_low_ssq_post, var.equal = FALSE)
+  cat("Welch's t-test Results:\n")
+  cat("t =", t_test$statistic, "\n")
+  cat("df =", t_test$parameter, "\n")
+  cat("p-value =", t_test$p.value, "\n")
+  cat("95% CI for difference: [", t_test$conf.int[1], ", ", t_test$conf.int[2], "]\n", sep = "")
+  
+  # Effect size (Cohen's d)
+  pooled_sd <- sqrt((sd(oa_high_ssq_post)^2 + sd(oa_low_ssq_post)^2) / 2)
+  cohens_d <- (mean(oa_high_ssq_post) - mean(oa_low_ssq_post)) / pooled_sd
+  cat("Cohen's d =", round(cohens_d, 3), "\n")
+  
+  p_value <- t_test$p.value
+  
+} else {
+  cat("Assumptions met. Using standard independent samples t-test.\n\n")
+  t_test <- t.test(oa_high_ssq_post, oa_low_ssq_post, var.equal = TRUE)
+  cat("Independent Samples t-test Results:\n")
+  cat("t =", t_test$statistic, "\n")
+  cat("df =", t_test$parameter, "\n")
+  cat("p-value =", t_test$p.value, "\n")
+  cat("95% CI for difference: [", t_test$conf.int[1], ", ", t_test$conf.int[2], "]\n", sep = "")
+  
+  # Effect size (Cohen's d)
+  pooled_sd <- sqrt((sd(oa_high_ssq_post)^2 + sd(oa_low_ssq_post)^2) / 2)
+  cohens_d <- (mean(oa_high_ssq_post) - mean(oa_low_ssq_post)) / pooled_sd
+  cat("Cohen's d =", round(cohens_d, 3), "\n")
+  
+  p_value <- t_test$p.value
+}
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(p_value < 0.05) {
+  cat("Result: SIGNIFICANT difference in post-VR SSQ between OA subgroups (p < 0.05)\n")
+  if(mean(oa_high_ssq_post) > mean(oa_low_ssq_post)) {
+    cat("Direction: OA_High has MORE post-VR symptoms than OA_Low\n")
+  } else {
+    cat("Direction: OA_Low has MORE post-VR symptoms than OA_High\n")
+  }
+} else {
+  cat("Result: NO significant difference in post-VR SSQ between OA subgroups (p >= 0.05)\n")
+}
+```
+
+## Test 14: SSQ Change Scores
+
+```{r test-14-ssq-diff}
+cat("SSQ Change: Simulator Sickness Change (Post - Pre)\n")
+cat("Note: Positive values = INCREASE in symptoms, Negative = DECREASE\n\n")
+
+# Summary statistics by subgroup
+ssq_diff_summary <- merged_data %>%
+  group_by(OA_Subgroup) %>%
+  summarise(
+    n = sum(!is.na(SSQ_Diff)),
+    Mean = mean(SSQ_Diff, na.rm = TRUE),
+    SD = sd(SSQ_Diff, na.rm = TRUE),
+    Median = median(SSQ_Diff, na.rm = TRUE),
+    Q1 = quantile(SSQ_Diff, 0.25, na.rm = TRUE),
+    Q3 = quantile(SSQ_Diff, 0.75, na.rm = TRUE),
+    Min = min(SSQ_Diff, na.rm = TRUE),
+    Max = max(SSQ_Diff, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(ssq_diff_summary)
+cat("\n")
+
+# Filter out NA values for testing
+ssq_diff_data_clean <- merged_data %>%
+  filter(!is.na(SSQ_Diff), !is.na(OA_Subgroup))
+
+oa_high_ssq_diff <- ssq_diff_data_clean %>% filter(OA_Subgroup == "OA_High") %>% pull(SSQ_Diff)
+oa_low_ssq_diff <- ssq_diff_data_clean %>% filter(OA_Subgroup == "OA_Low") %>% pull(SSQ_Diff)
+
+# Check normality with Shapiro-Wilk test
+cat("Normality Tests (Shapiro-Wilk):\n")
+shapiro_high <- shapiro.test(oa_high_ssq_diff)
+shapiro_low <- shapiro.test(oa_low_ssq_diff)
+cat("OA_High: W =", round(shapiro_high$statistic, 4), ", p =", shapiro_high$p.value)
+if(shapiro_high$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+cat("\n")
+cat("OA_Low: W =", round(shapiro_low$statistic, 4), ", p =", shapiro_low$p.value)
+if(shapiro_low$p.value < 0.05) cat(" (non-normal)") else cat(" (normal)")
+cat("\n\n")
+
+# Check homogeneity of variance with Levene's test
+levene_test <- leveneTest(SSQ_Diff ~ OA_Subgroup, data = ssq_diff_data_clean)
+cat("Levene's Test for Homogeneity of Variance:\n")
+cat("F =", round(levene_test$`F value`[1], 4), ", p =", levene_test$`Pr(>F)`[1])
+if(levene_test$`Pr(>F)`[1] < 0.05) cat(" (variances unequal)") else cat(" (variances equal)")
+cat("\n\n")
+
+# Decide which test to use
+use_welch <- levene_test$`Pr(>F)`[1] < 0.05
+use_nonparametric <- shapiro_high$p.value < 0.05 | shapiro_low$p.value < 0.05
+
+if(use_nonparametric) {
+  cat("⚠️ Data violates normality assumption. Using Mann-Whitney U test.\n\n")
+  mw_test <- wilcox.test(oa_high_ssq_diff, oa_low_ssq_diff, exact = FALSE)
+  cat("Mann-Whitney U Test Results:\n")
+  cat("W statistic =", mw_test$statistic, "\n")
+  cat("p-value =", mw_test$p.value, "\n")
+  
+  # Effect size
+  n1 <- length(oa_high_ssq_diff)
+  n2 <- length(oa_low_ssq_diff)
+  r_rank_biserial <- 1 - (2*mw_test$statistic) / (n1 * n2)
+  cat("Rank-biserial correlation =", round(r_rank_biserial, 3), "\n")
+  
+  # Report IQR for each subgroup
+  cat("\nIQR by OA subgroup:\n")
+  cat("OA_High: [", quantile(oa_high_ssq_diff, 0.25), ", ", quantile(oa_high_ssq_diff, 0.75), "]\n", sep = "")
+  cat("OA_Low: [", quantile(oa_low_ssq_diff, 0.25), ", ", quantile(oa_low_ssq_diff, 0.75), "]\n", sep = "")
+  
+  p_value <- mw_test$p.value
+  
+} else if(use_welch) {
+  cat("Variances are unequal. Using Welch's t-test.\n\n")
+  t_test <- t.test(oa_high_ssq_diff, oa_low_ssq_diff, var.equal = FALSE)
+  cat("Welch's t-test Results:\n")
+  cat("t =", t_test$statistic, "\n")
+  cat("df =", t_test$parameter, "\n")
+  cat("p-value =", t_test$p.value, "\n")
+  cat("95% CI for difference: [", t_test$conf.int[1], ", ", t_test$conf.int[2], "]\n", sep = "")
+  
+  # Effect size (Cohen's d)
+  pooled_sd <- sqrt((sd(oa_high_ssq_diff)^2 + sd(oa_low_ssq_diff)^2) / 2)
+  cohens_d <- (mean(oa_high_ssq_diff) - mean(oa_low_ssq_diff)) / pooled_sd
+  cat("Cohen's d =", round(cohens_d, 3), "\n")
+  
+  p_value <- t_test$p.value
+  
+} else {
+  cat("Assumptions met. Using standard independent samples t-test.\n\n")
+  t_test <- t.test(oa_high_ssq_diff, oa_low_ssq_diff, var.equal = TRUE)
+  cat("Independent Samples t-test Results:\n")
+  cat("t =", t_test$statistic, "\n")
+  cat("df =", t_test$parameter, "\n")
+  cat("p-value =", t_test$p.value, "\n")
+  cat("95% CI for difference: [", t_test$conf.int[1], ", ", t_test$conf.int[2], "]\n", sep = "")
+  
+  # Effect size (Cohen's d)
+  pooled_sd <- sqrt((sd(oa_high_ssq_diff)^2 + sd(oa_low_ssq_diff)^2) / 2)
+  cohens_d <- (mean(oa_high_ssq_diff) - mean(oa_low_ssq_diff)) / pooled_sd
+  cat("Cohen's d =", round(cohens_d, 3), "\n")
+  
+  p_value <- t_test$p.value
+}
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(p_value < 0.05) {
+  cat("Result: SIGNIFICANT difference in SSQ change between OA subgroups (p < 0.05)\n")
+  if(mean(oa_high_ssq_diff) > mean(oa_low_ssq_diff)) {
+    cat("Direction: OA_High had GREATER increase in symptoms than OA_Low\n")
+  } else {
+    cat("Direction: OA_Low had GREATER increase in symptoms than OA_High\n")
+  }
+} else {
+  cat("Result: NO significant difference in SSQ change between OA subgroups (p >= 0.05)\n")
+}
+```
+
+## Test 15: Pre-Study SSS Scores
+
+```{r test-15-sss-pre}
+cat("SSS Pre: Stanford Sleepiness Scale - Baseline\n")
+cat("Note: Single-item ordinal scale (1-7), Higher = MORE sleepy\n")
+cat("Analysis: Mann-Whitney U test (appropriate for ordinal data)\n\n")
+
+# Summary statistics by subgroup (emphasizing median for ordinal data)
+sss_pre_summary <- merged_data %>%
+  group_by(OA_Subgroup) %>%
+  summarise(
+    n = sum(!is.na(SSS_Pre)),
+    Median = median(SSS_Pre, na.rm = TRUE),
+    Q1 = quantile(SSS_Pre, 0.25, na.rm = TRUE),
+    Q3 = quantile(SSS_Pre, 0.75, na.rm = TRUE),
+    Mean = mean(SSS_Pre, na.rm = TRUE),
+    SD = sd(SSS_Pre, na.rm = TRUE),
+    Min = min(SSS_Pre, na.rm = TRUE),
+    Max = max(SSS_Pre, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(sss_pre_summary)
+cat("\n")
+
+# Show frequency distribution
+cat("Frequency Distribution:\n")
+freq_table <- table(merged_data$SSS_Pre, merged_data$OA_Subgroup)
+print(freq_table)
+cat("\n")
+
+# Filter out NA values for testing
+sss_pre_data_clean <- merged_data %>%
+  filter(!is.na(SSS_Pre), !is.na(OA_Subgroup))
+
+oa_high_sss_pre <- sss_pre_data_clean %>% filter(OA_Subgroup == "OA_High") %>% pull(SSS_Pre)
+oa_low_sss_pre <- sss_pre_data_clean %>% filter(OA_Subgroup == "OA_Low") %>% pull(SSS_Pre)
+
+# Mann-Whitney U test
+mw_test <- wilcox.test(oa_high_sss_pre, oa_low_sss_pre, exact = FALSE)
+
+cat("Mann-Whitney U Test Results:\n")
+cat("W statistic =", mw_test$statistic, "\n")
+cat("p-value =", mw_test$p.value, "\n")
+
+# Effect size (rank-biserial correlation)
+n1 <- length(oa_high_sss_pre)
+n2 <- length(oa_low_sss_pre)
+r_rank_biserial <- 1 - (2*mw_test$statistic) / (n1 * n2)
+cat("Rank-biserial correlation =", round(r_rank_biserial, 3), "\n")
+
+# Report IQR for each subgroup
+cat("\nIQR by OA subgroup:\n")
+cat("OA_High: [", quantile(oa_high_sss_pre, 0.25), ", ", quantile(oa_high_sss_pre, 0.75), "]\n", sep = "")
+cat("OA_Low: [", quantile(oa_low_sss_pre, 0.25), ", ", quantile(oa_low_sss_pre, 0.75), "]\n", sep = "")
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(mw_test$p.value < 0.05) {
+  cat("Result: SIGNIFICANT difference in baseline sleepiness between OA subgroups (p < 0.05)\n")
+  if(median(oa_high_sss_pre) > median(oa_low_sss_pre)) {
+    cat("Direction: OA_High was MORE sleepy at baseline (Median High =", median(oa_high_sss_pre), 
+        ", Low =", median(oa_low_sss_pre), ")\n")
+  } else if(median(oa_high_sss_pre) < median(oa_low_sss_pre)) {
+    cat("Direction: OA_Low was MORE sleepy at baseline (Median High =", median(oa_high_sss_pre), 
+        ", Low =", median(oa_low_sss_pre), ")\n")
+  } else {
+    cat("Direction: Medians are equal, but distributions differ\n")
+  }
+} else {
+  cat("Result: NO significant difference in baseline sleepiness between OA subgroups (p >= 0.05)\n")
+  cat("Median OA_High =", median(oa_high_sss_pre), ", Median OA_Low =", median(oa_low_sss_pre), "\n")
+  cat("(This is expected - both subgroups should be similar before the study)\n")
+}
+```
+
+## Test 16: Post-Study SSS Scores
+
+```{r test-16-sss-post}
+cat("SSS Post: Stanford Sleepiness Scale - After Study\n")
+cat("Note: Single-item ordinal scale (1-7), Higher = MORE sleepy\n")
+cat("Analysis: Mann-Whitney U test (appropriate for ordinal data)\n\n")
+
+# Summary statistics by subgroup (emphasizing median for ordinal data)
+sss_post_summary <- merged_data %>%
+  group_by(OA_Subgroup) %>%
+  summarise(
+    n = sum(!is.na(SSS_Post)),
+    Median = median(SSS_Post, na.rm = TRUE),
+    Q1 = quantile(SSS_Post, 0.25, na.rm = TRUE),
+    Q3 = quantile(SSS_Post, 0.75, na.rm = TRUE),
+    Mean = mean(SSS_Post, na.rm = TRUE),
+    SD = sd(SSS_Post, na.rm = TRUE),
+    Min = min(SSS_Post, na.rm = TRUE),
+    Max = max(SSS_Post, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(sss_post_summary)
+cat("\n")
+
+# Show frequency distribution
+cat("Frequency Distribution:\n")
+freq_table <- table(merged_data$SSS_Post, merged_data$OA_Subgroup)
+print(freq_table)
+cat("\n")
+
+# Filter out NA values for testing
+sss_post_data_clean <- merged_data %>%
+  filter(!is.na(SSS_Post), !is.na(OA_Subgroup))
+
+oa_high_sss_post <- sss_post_data_clean %>% filter(OA_Subgroup == "OA_High") %>% pull(SSS_Post)
+oa_low_sss_post <- sss_post_data_clean %>% filter(OA_Subgroup == "OA_Low") %>% pull(SSS_Post)
+
+# Mann-Whitney U test
+mw_test <- wilcox.test(oa_high_sss_post, oa_low_sss_post, exact = FALSE)
+
+cat("Mann-Whitney U Test Results:\n")
+cat("W statistic =", mw_test$statistic, "\n")
+cat("p-value =", mw_test$p.value, "\n")
+
+# Effect size (rank-biserial correlation)
+n1 <- length(oa_high_sss_post)
+n2 <- length(oa_low_sss_post)
+r_rank_biserial <- 1 - (2*mw_test$statistic) / (n1 * n2)
+cat("Rank-biserial correlation =", round(r_rank_biserial, 3), "\n")
+
+# Report IQR for each subgroup
+cat("\nIQR by OA subgroup:\n")
+cat("OA_High: [", quantile(oa_high_sss_post, 0.25), ", ", quantile(oa_high_sss_post, 0.75), "]\n", sep = "")
+cat("OA_Low: [", quantile(oa_low_sss_post, 0.25), ", ", quantile(oa_low_sss_post, 0.75), "]\n", sep = "")
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(mw_test$p.value < 0.05) {
+  cat("Result: SIGNIFICANT difference in post-study sleepiness between OA subgroups (p < 0.05)\n")
+  if(median(oa_high_sss_post) > median(oa_low_sss_post)) {
+    cat("Direction: OA_High was MORE sleepy after study (Median High =", median(oa_high_sss_post), 
+        ", Low =", median(oa_low_sss_post), ")\n")
+  } else if(median(oa_high_sss_post) < median(oa_low_sss_post)) {
+    cat("Direction: OA_Low was MORE sleepy after study (Median High =", median(oa_high_sss_post), 
+        ", Low =", median(oa_low_sss_post), ")\n")
+  } else {
+    cat("Direction: Medians are equal, but distributions differ\n")
+  }
+} else {
+  cat("Result: NO significant difference in post-study sleepiness between OA subgroups (p >= 0.05)\n")
+  cat("Median OA_High =", median(oa_high_sss_post), ", Median OA_Low =", median(oa_low_sss_post), "\n")
+}
+```
+
+## Test 17: SSS Change Scores
+
+```{r test-17-sss-diff}
+cat("SSS Change: Sleepiness Change (Post - Pre)\n")
+cat("Note: Positive values = INCREASE in sleepiness, Negative = DECREASE\n")
+cat("Analysis: Mann-Whitney U test (appropriate for ordinal data)\n\n")
+
+# Summary statistics by subgroup (emphasizing median for ordinal data)
+sss_diff_summary <- merged_data %>%
+  group_by(OA_Subgroup) %>%
+  summarise(
+    n = sum(!is.na(SSS_Diff)),
+    Median = median(SSS_Diff, na.rm = TRUE),
+    Q1 = quantile(SSS_Diff, 0.25, na.rm = TRUE),
+    Q3 = quantile(SSS_Diff, 0.75, na.rm = TRUE),
+    Mean = mean(SSS_Diff, na.rm = TRUE),
+    SD = sd(SSS_Diff, na.rm = TRUE),
+    Min = min(SSS_Diff, na.rm = TRUE),
+    Max = max(SSS_Diff, na.rm = TRUE)
+  )
+
+cat("Summary Statistics:\n")
+print(sss_diff_summary)
+cat("\n")
+
+# Show frequency distribution
+cat("Frequency Distribution:\n")
+freq_table <- table(merged_data$SSS_Diff, merged_data$OA_Subgroup)
+print(freq_table)
+cat("\n")
+
+# Filter out NA values for testing
+sss_diff_data_clean <- merged_data %>%
+  filter(!is.na(SSS_Diff), !is.na(OA_Subgroup))
+
+oa_high_sss_diff <- sss_diff_data_clean %>% filter(OA_Subgroup == "OA_High") %>% pull(SSS_Diff)
+oa_low_sss_diff <- sss_diff_data_clean %>% filter(OA_Subgroup == "OA_Low") %>% pull(SSS_Diff)
+
+# Mann-Whitney U test
+mw_test <- wilcox.test(oa_high_sss_diff, oa_low_sss_diff, exact = FALSE)
+
+cat("Mann-Whitney U Test Results:\n")
+cat("W statistic =", mw_test$statistic, "\n")
+cat("p-value =", mw_test$p.value, "\n")
+
+# Effect size (rank-biserial correlation)
+n1 <- length(oa_high_sss_diff)
+n2 <- length(oa_low_sss_diff)
+r_rank_biserial <- 1 - (2*mw_test$statistic) / (n1 * n2)
+cat("Rank-biserial correlation =", round(r_rank_biserial, 3), "\n")
+
+# Report IQR for each subgroup
+cat("\nIQR by OA subgroup:\n")
+cat("OA_High: [", quantile(oa_high_sss_diff, 0.25), ", ", quantile(oa_high_sss_diff, 0.75), "]\n", sep = "")
+cat("OA_Low: [", quantile(oa_low_sss_diff, 0.25), ", ", quantile(oa_low_sss_diff, 0.75), "]\n", sep = "")
+
+# Interpretation
+cat("\n--- INTERPRETATION ---\n")
+if(mw_test$p.value < 0.05) {
+  cat("Result: SIGNIFICANT difference in sleepiness change between OA subgroups (p < 0.05)\n")
+  if(median(oa_high_sss_diff) > median(oa_low_sss_diff)) {
+    cat("Direction: OA_High had GREATER increase in sleepiness (Median change: High =", median(oa_high_sss_diff), 
+        ", Low =", median(oa_low_sss_diff), ")\n")
+  } else if(median(oa_high_sss_diff) < median(oa_low_sss_diff)) {
+    cat("Direction: OA_Low had GREATER increase in sleepiness (Median change: High =", median(oa_high_sss_diff), 
+        ", Low =", median(oa_low_sss_diff), ")\n")
+  } else {
+    cat("Direction: Median changes are equal, but distributions differ\n")
+  }
+} else {
+  cat("Result: NO significant difference in sleepiness change between OA subgroups (p >= 0.05)\n")
+  cat("Median change: OA_High =", median(oa_high_sss_diff), ", OA_Low =", median(oa_low_sss_diff), "\n")
+}
+```
+
+# Session Information
+
+```{r session-info}
+sessionInfo()
+```

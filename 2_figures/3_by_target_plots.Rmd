@@ -1,0 +1,303 @@
+---
+title: "NavCity Outcomes By Target Code - Optimized"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r global-options, include=FALSE}
+source(file.path(Sys.getenv("NAVCITY_CODE"), "setup.R"), local = TRUE)   # data paths, sample filter, fixes
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r loading-libraries, include=FALSE}
+# Load required libraries for data analysis and visualization
+library(tidyverse)    # Data manipulation and ggplot2
+library(plotrix)      # For std.error function
+library(gridExtra)    # Arranging multiple plots
+library(scales)       # Scale formatting
+```
+
+```{r setup-paths, include=FALSE}
+# Define file paths - MODIFY THESE FOR YOUR SYSTEM
+data_path <- paper_data_path
+output_path <- file.path(Sys.getenv("ANALYSIS_ROOT"), "output", "figures")
+dir.create(output_path, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r load-and-process-data, include=FALSE}
+# Function to load and standardize merged navigation data
+load_merged_data <- function(file_path, age_group) {
+  # Read CSV file
+  data <- read.csv(file_path)
+  
+  # Add age group column and remove index
+  data <- data %>%
+    select(-1) %>%  # Remove first column (index)
+    mutate(
+      Age = age_group,
+      Block_Num = as.factor(Block_Num)
+    )
+  
+  # Set consistent target ordering
+  desired_order <- c("Automobile shop", "Police station ", "Fire Station", 
+                    "Bank", "Pawn Shop", "Pizzeria", "Quattroki Restaurant", 
+                    "High School")
+  data$Target_Name <- factor(data$Target_Name, levels = desired_order)
+  
+  return(data)
+}
+
+# Load both merged navigation datasets
+ya_data <- load_merged_data(file.path(navcity_path, "ya_merged_results.csv"), "YA")
+oa_data <- load_merged_data(file.path(navcity_path, "oa_merged_results.csv"), "OA")
+
+# Combine all navigation data
+all_nav_data <- bind_rows(ya_data, oa_data) %>%
+  mutate(Age = factor(Age, levels = c("YA", "OA")))
+
+# Load additional non-navigation data (if needed for other analyses)
+non_nav_data <- read.csv(file.path(paper_data_path, "non_nav_data.csv"))
+
+print(paste("Loaded navigation data for", nrow(all_nav_data), "trials"))
+print(paste("YA participants:", length(unique(ya_data$Participant))))
+print(paste("OA participants:", length(unique(oa_data$Participant))))
+```
+
+```{r calculate-target-averages, include=FALSE}
+# Calculate averages across blocks for each participant-target combination
+# This replaces the manual subsetting and for loops with efficient vectorized operations
+
+target_data_all <- all_nav_data %>%
+  # Group by participant and target to average across blocks
+  group_by(Participant, Target_Name, Age) %>%
+  summarise(
+    Total_Time = mean(Total_Time, na.rm = TRUE),
+    Orientation_Time = mean(Orientation_Time, na.rm = TRUE),
+    Navigation_Time = mean(Navigation_Time, na.rm = TRUE),
+    Distance = mean(Distance, na.rm = TRUE),
+    Speed = mean(Speed, na.rm = TRUE),
+    Mean_Dwell = mean(Mean_Dwell, na.rm = TRUE),
+    Teleportations = mean(Teleportations, na.rm = TRUE),
+    Mean_Teleport_Distance = mean(Mean_Teleport_Distance, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+print(paste("Calculated target averages for", nrow(target_data_all), "participant-target combinations"))
+```
+
+```{r calculate-change-scores, include=FALSE}
+# Calculate change scores (Block 3 - Block 1) efficiently
+# This replaces the inefficient for loops with vectorized operations
+
+calculate_change_scores <- function(data) {
+  data %>%
+    # Keep only Block 1 and Block 3 for change calculation
+    filter(Block_Num %in% c("1", "3")) %>%
+    
+    # Select variables for change calculation
+    select(Participant, Target_Name, Block_Num, Total_Time, Orientation_Time, 
+           Navigation_Time, Distance, Speed, Mean_Dwell, Teleportations, Mean_Teleport_Distance) %>%
+    
+    # Reshape data to wide format for easy subtraction
+    pivot_wider(
+      names_from = Block_Num,
+      values_from = c(Total_Time, Orientation_Time, Navigation_Time, 
+                     Distance, Speed, Mean_Dwell, Teleportations, Mean_Teleport_Distance),
+      names_sep = "_Block_"
+    ) %>%
+    
+    # Calculate change scores (Block 3 - Block 1)
+    mutate(
+      Total_Time_Change = Total_Time_Block_3 - Total_Time_Block_1,
+      Orientation_Time_Change = Orientation_Time_Block_3 - Orientation_Time_Block_1,
+      Navigation_Time_Change = Navigation_Time_Block_3 - Navigation_Time_Block_1,
+      Distance_Change = Distance_Block_3 - Distance_Block_1,
+      Speed_Change = Speed_Block_3 - Speed_Block_1,
+      Mean_Dwell_Change = Mean_Dwell_Block_3 - Mean_Dwell_Block_1,
+      Teleportations_Change = Teleportations_Block_3 - Teleportations_Block_1,
+      Mean_Teleport_Distance_Change = Mean_Teleport_Distance_Block_3 - Mean_Teleport_Distance_Block_1
+    ) %>%
+    
+    # Keep only participant, target, and change scores
+    select(Participant, Target_Name, ends_with("_Change"))
+}
+
+# Calculate change scores for both age groups
+change_ya <- calculate_change_scores(ya_data) %>% mutate(Age = "YA")
+change_oa <- calculate_change_scores(oa_data) %>% mutate(Age = "OA")
+
+print(paste("Calculated change scores for YA:", nrow(change_ya), "combinations"))
+print(paste("Calculated change scores for OA:", nrow(change_oa), "combinations"))
+```
+
+```{r plotting-functions, include=FALSE}
+# Function to create summary statistics for target plots
+create_target_summary <- function(data, measure_var) {
+  data %>%
+    group_by(Target_Name, Age) %>%
+    summarise(
+      mean_val = mean(.data[[measure_var]], na.rm = TRUE),
+      se = std.error(.data[[measure_var]]),
+      .groups = 'drop'
+    ) %>%
+    rename(!!measure_var := mean_val)  # Rename mean_val back to original variable name
+}
+
+# Function to create standardized target plots with individual participant lines
+create_target_plot <- function(data, y_var, y_label, y_limits = NULL, 
+                              colors = c('#5E7AFA', '#FF9FAF'),
+                              mean_colors = c('#5E7AFA', '#EF8899')) {
+  
+  # Create summary statistics for mean lines
+  summary_stats <- create_target_summary(data, y_var)
+  
+  # Create base plot
+  p <- ggplot(data, aes(x = Target_Name, y = .data[[y_var]], color = Age)) +
+    
+    # Individual participant lines (faded)
+    geom_line(aes(group = Participant), alpha = 0.3) +
+    
+    # Set colors for points and lines
+    scale_color_manual(values = colors) +
+    
+    # Individual participant points with white outline
+    geom_point(aes(group = Participant), color = 'white', size = 3) +
+    geom_point(aes(group = Participant), size = 1.8, alpha = 0.5) +
+    
+    # Mean lines for each age group (bold)
+    geom_line(data = filter(summary_stats, Age == "YA"), 
+              aes(x = Target_Name, y = .data[[y_var]], group = 1), 
+              size = 1, color = mean_colors[2]) +
+    geom_line(data = filter(summary_stats, Age == "OA"), 
+              aes(x = Target_Name, y = .data[[y_var]], group = 1), 
+              size = 1, color = mean_colors[1]) +
+    
+    # Error bars for each age group
+    geom_errorbar(data = filter(summary_stats, Age == "YA"), 
+                  aes(x = Target_Name, y = .data[[y_var]], 
+                      ymin = .data[[y_var]] - se, ymax = .data[[y_var]] + se), 
+                  width = 0.2, size = 1, color = mean_colors[2]) +
+    geom_errorbar(data = filter(summary_stats, Age == "OA"), 
+                  aes(x = Target_Name, y = .data[[y_var]], 
+                      ymin = .data[[y_var]] - se, ymax = .data[[y_var]] + se), 
+                  width = 0.2, size = 1, color = mean_colors[1]) +
+    
+    # Labels and formatting
+    labs(color = "Participant", y = y_label, x = "") +
+    scale_x_discrete(labels = c("T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8")) +
+    
+    # Set y-axis limits if provided
+    {if (!is.null(y_limits)) ylim(y_limits)} +
+    
+    # Theme
+    theme_classic() +
+    theme(
+      axis.line = element_line(linewidth = 0.5, colour = "#242526"),
+      axis.ticks = element_line(linewidth = 0.2, colour = "#242526"),
+      plot.title = element_text(hjust = 0.5),
+      legend.position = "none",
+      axis.text.x = element_text(size = 22),
+      axis.text.y = element_text(size = 25),
+      axis.title.y = element_text(size = 25),
+      axis.title.x = element_text(size = 22)
+    )
+  
+  return(p)
+}
+
+# Function to save plots with consistent settings
+save_plot <- function(plot, filename, width = 6.5, height = 5.5) {
+  ggsave(
+    filename = file.path(output_path, paste0(filename, ".svg")),
+    plot = plot,
+    width = width,
+    height = height
+  )
+  cat("Saved:", filename, "\n")
+}
+```
+
+```{r create-all-plots, include=FALSE}
+# Create all target plots using the standardized function
+# This replaces hundreds of lines of repetitive code
+
+# Define plot specifications in a data frame for easy management
+plot_specs <- tribble(
+  ~var_name,                ~label,                            ~y_limits,
+  "Total_Time",             "Total Time (s)",                  NULL,
+  "Orientation_Time",       "Orientation Time (s)",            NULL,
+  "Navigation_Time",        "Navigation Time (s)",             NULL,
+  "Distance",               "Distance Traveled (m)",           NULL,
+  "Speed",                  "Speed (m/s)",                     NULL,
+  "Mean_Dwell",             "Dwell Duration (s)",              NULL,
+  "Teleportations",         "Teleportations (count)",          NULL,
+  "Mean_Teleport_Distance", "Teleport Distance (m)",           NULL
+)
+
+# Create all plots using purrr::map (functional programming approach)
+plots <- map2(plot_specs$var_name, plot_specs$label, function(var, label) {
+  spec <- filter(plot_specs, var_name == var)
+  create_target_plot(
+    data = target_data_all,
+    y_var = var,
+    y_label = label,
+    y_limits = spec$y_limits[[1]]
+  )
+})
+
+# Name the plots for easy reference
+names(plots) <- paste0("p_", c("ct", "orict", "navct", "dt", "speed", "dwell", "teleport", "teleport_dist"))
+
+# Extract individual plots
+p_ct <- plots$p_ct
+p_orict <- plots$p_orict  
+p_navct <- plots$p_navct
+p_dt <- plots$p_dt
+p_speed <- plots$p_speed
+p_dwell <- plots$p_dwell
+p_teleport <- plots$p_teleport
+p_teleport_dt <- plots$p_teleport_dist   # FIX: was plots$p_teleport_dt, which does not exist (NULL), so the composite figure failed
+```
+
+```{r save-individual-plots, include=FALSE}
+# Save all individual plots efficiently
+plot_names <- c("3_by_target_ct", "3_by_target_orict", "3_by_target_navct", "3_by_target_dt", 
+                "3_by_target_speed", "3_by_target_dwell", "3_by_target_teleport", "3_by_target_teleport_dt")
+
+walk2(plots, plot_names, ~ save_plot(.x, .y))
+```
+
+```{r create-composite-figure, fig.height=12, fig.width=20, fig.align="center"}
+# Create composite figure with all plots arranged in a grid
+# Arrange plots in a 4x2 layout with 8 plots
+composite_plot <- grid.arrange(
+  p_ct, p_orict, p_navct, p_dt,                    # Row 1
+  p_speed, p_dwell, p_teleport, p_teleport_dt,   # Row 2
+  ncol = 4, 
+  nrow = 2
+)
+
+# Save composite figure
+save_plot(composite_plot, "3_by_target_composite", width = 20, height = 12)
+```
+
+```{r summary-statistics, include=FALSE}
+# Generate summary statistics for each measure by age group and target
+summary_stats <- target_data_all %>%
+  pivot_longer(
+    cols = c(Total_Time, Orientation_Time, Navigation_Time, Distance, 
+             Speed, Mean_Dwell, Teleportations, Mean_Teleport_Distance),
+    names_to = "Measure",
+    values_to = "Value"
+  ) %>%
+  group_by(Age, Target_Name, Measure) %>%
+  summarise(
+    n = n(),
+    mean = round(mean(Value, na.rm = TRUE), 2),
+    se = round(std.error(Value), 3),
+    .groups = 'drop'
+  )
+
+print("Summary statistics by age group, target, and measure:")
+print(summary_stats)
+```

@@ -1,0 +1,355 @@
+---
+title: "Two-Group Correlation Plots Code - Optimized"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r global-options, include=FALSE}
+source(file.path(Sys.getenv("NAVCITY_CODE"), "setup.R"), local = TRUE)   # data paths, sample filter, fixes
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r loading-libraries, include=FALSE}
+# Load required libraries for data analysis and visualization
+library(tidyverse)    # Data manipulation and ggplot2
+library(plotrix)      # For std.error function
+library(gridExtra)    # Arranging multiple plots
+library(scales)       # Scale formatting
+```
+
+```{r setup-paths, include=FALSE}
+# Define file paths - MODIFY THESE FOR YOUR SYSTEM
+data_path <- paper_data_path
+output_path <- file.path(Sys.getenv("ANALYSIS_ROOT"), "output", "figures")
+dir.create(output_path, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r load-and-process-data, include=FALSE}
+# Function to load and standardize navigation data (no column renaming needed)
+load_nav_data <- function(file_path, age_group) {
+  # Read CSV file
+  data <- read.csv(file_path)
+  
+  # Add age group column and remove index
+  data <- data %>%
+    select(-1) %>%  # Remove first column (index)
+    mutate(
+      Group = age_group,
+      Block_Num = as.factor(Block_Num)
+    )
+  
+  return(data)
+}
+
+# Load navigation datasets (using merged data for change score calculation)
+ya_nav_data <- load_nav_data(file.path(navcity_path, "ya_merged_results.csv"), "YA")
+oa_nav_data <- load_nav_data(file.path(navcity_path, "oa_merged_results.csv"), "OA")
+
+# Load non-navigation data (NARA scores, etc.)
+non_nav_data <- read.csv(file.path(paper_data_path, "non_nav_data.csv")) %>%
+  select(-Group)  # Remove Age column to avoid conflicts
+
+# Combine navigation datasets
+all_nav_data <- bind_rows(ya_nav_data, oa_nav_data) %>%
+  mutate(Age = factor(Group, levels = c("YA", "OA")))
+
+print(paste("Loaded navigation data for", nrow(all_nav_data), "trials"))
+print(paste("Loaded non-navigation data for", nrow(non_nav_data), "participants"))
+```
+
+```{r calculate-change-scores, include=FALSE}
+# Calculate change scores (Block 3 - Block 1) efficiently
+# This replaces the inefficient for loops with vectorized operations
+
+# Calculate overall means across all targets for each participant-block combination
+block_means <- all_nav_data %>%
+  group_by(Participant, Block_Num, Age) %>%
+  summarise(
+    Total_Time = mean(Total_Time, na.rm = TRUE),
+    Orientation_Time = mean(Orientation_Time, na.rm = TRUE),
+    Navigation_Time = mean(Navigation_Time, na.rm = TRUE),
+    Distance = mean(Distance, na.rm = TRUE),
+    Speed = mean(Speed, na.rm = TRUE),
+    Mean_Dwell = mean(Mean_Dwell, na.rm = TRUE),
+    Teleportations = mean(Teleportations, na.rm = TRUE),
+    Mean_Teleport_Distance = mean(Mean_Teleport_Distance, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+# Calculate change scores (Block 3 - Block 1)
+change_scores <- block_means %>%
+  filter(Block_Num %in% c("1", "3")) %>%
+  pivot_wider(
+    names_from = Block_Num,
+    values_from = c(Total_Time, Orientation_Time, Navigation_Time, 
+                   Distance, Speed, Mean_Dwell, Teleportations, Mean_Teleport_Distance),
+    names_sep = "_Block_"
+  ) %>%
+  mutate(
+    Total_Time = Total_Time_Block_3 - Total_Time_Block_1,
+    Orientation_Time = Orientation_Time_Block_3 - Orientation_Time_Block_1,
+    Navigation_Time = Navigation_Time_Block_3 - Navigation_Time_Block_1,
+    Distance = Distance_Block_3 - Distance_Block_1,
+    Speed = Speed_Block_3 - Speed_Block_1,
+    Mean_Dwell = Mean_Dwell_Block_3 - Mean_Dwell_Block_1,
+    Teleportations = Teleportations_Block_3 - Teleportations_Block_1,
+    Mean_Teleport_Distance = Mean_Teleport_Distance_Block_3 - Mean_Teleport_Distance_Block_1
+  ) %>%
+  select(Participant, Age, Total_Time, Orientation_Time, Navigation_Time, 
+         Distance, Speed, Mean_Dwell, Teleportations, Mean_Teleport_Distance)
+
+# Merge with NARA scores for change score analysis
+df_merge <- change_scores %>%
+  left_join(non_nav_data, by = "Participant") %>%
+  filter(!is.na(NARA))  # Remove participants without NARA scores
+
+# Create separate datasets for age group analyses (change scores)
+ya_data <- filter(df_merge, Age == "YA")
+oa_data <- filter(df_merge, Age == "OA")
+
+print(paste("Calculated change scores and merged with NARA for", nrow(df_merge), "participants"))
+print(paste("YA participants:", nrow(ya_data)))
+print(paste("OA participants:", nrow(oa_data)))
+```
+
+```{r calculate-mean-scores, include=FALSE}
+# NEW: Calculate mean scores across all blocks for each participant
+# Calculate mean across all blocks for each participant
+mean_scores <- block_means %>%
+  group_by(Participant, Age) %>%
+  summarise(
+    Total_Time = mean(Total_Time, na.rm = TRUE),
+    Orientation_Time = mean(Orientation_Time, na.rm = TRUE),
+    Navigation_Time = mean(Navigation_Time, na.rm = TRUE),
+    Distance = mean(Distance, na.rm = TRUE),
+    Speed = mean(Speed, na.rm = TRUE),
+    Mean_Dwell = mean(Mean_Dwell, na.rm = TRUE),
+    Teleportations = mean(Teleportations, na.rm = TRUE),
+    Mean_Teleport_Distance = mean(Mean_Teleport_Distance, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+# Merge with NARA scores for mean score analysis
+df_merge_mean <- mean_scores %>%
+  left_join(non_nav_data, by = "Participant") %>%
+  filter(!is.na(NARA))  # Remove participants without NARA scores
+
+# Create separate datasets for age group analyses (mean scores)
+ya_data_mean <- filter(df_merge_mean, Age == "YA")
+oa_data_mean <- filter(df_merge_mean, Age == "OA")
+
+print(paste("Calculated mean scores across blocks and merged with NARA for", nrow(df_merge_mean), "participants"))
+print(paste("YA participants (mean):", nrow(ya_data_mean)))
+print(paste("OA participants (mean):", nrow(oa_data_mean)))
+```
+
+```{r plotting-functions, include=FALSE}
+# Function to save plots with consistent settings
+save_plot <- function(plot, filename, width = 5, height = 5) {
+  ggsave(
+    filename = file.path(output_path, paste0(filename, ".svg")),
+    plot = plot,
+    width = width,
+    height = height
+  )
+  cat("Saved:", filename, "\n")
+}
+
+# Function to create standardized correlation scatter plots
+create_correlation_plot <- function(data, x_var, x_label, colors = c('#FF9FAF', '#5E7AFA')) {
+  
+  ggplot(data, aes(x = .data[[x_var]], y = NARA, color = Age, fill = Age)) +
+    geom_point(size = 2, position = position_jitter(h = 0.18, w = 0)) +
+    scale_color_manual(values = colors) +
+    scale_fill_manual(values = colors) +
+    scale_y_continuous(limits = c(0, 8), breaks = seq(0, 8, by = 1)) +
+    stat_smooth(method = 'lm', formula = y ~ x) +
+    labs(
+      x = x_label,
+      y = "NARA Score",
+      color = "Age Group"
+    ) +
+    theme_classic() +
+    theme(
+      panel.background = element_rect(fill = "white", linewidth = 0.5, colour = "#242526"),
+      axis.line = element_line(linewidth = 0.5, colour = "#242526"),
+      axis.ticks = element_line(linewidth = 0.2, colour = "#242526"),
+      plot.title = element_text(hjust = 0.5),
+      axis.text.x = element_text(size = 20),
+      axis.text.y = element_text(size = 20),
+      axis.title.y = element_text(size = 20),
+      axis.title.x = element_text(size = 20),
+      legend.position = 'none'
+    )
+}
+```
+
+```{r create-change-score-plots, include=FALSE}
+# Define plot specifications for easy management
+plot_specs <- tribble(
+  ~var_name,                ~label,                                   ~plot_name,
+  "Distance",               "Δ Distance Traveled (m)",                "dt",
+  "Total_Time",             "Δ Total Time (s)",                       "ct",
+  "Orientation_Time",       "Δ Orientation Time (s)",                 "orict",
+  "Navigation_Time",        "Δ Navigation Time (s)",                  "navct",
+  "Speed",                  "Δ Speed (m/s)",                          "speed",
+  "Teleportations",         "Δ Teleportations (count)",               "teleport",
+  "Mean_Dwell",             "Δ Dwell Duration (s)",                   "dwell",
+  "Mean_Teleport_Distance", "Δ Teleport Distance (m)",                "teleport_dt"
+)
+
+# Create all change score plots using functional programming
+change_plots <- map2(plot_specs$var_name, plot_specs$label, function(var, label) {
+  create_correlation_plot(df_merge, var, label)
+})
+
+# Name the plots for easy reference
+names(change_plots) <- paste0("p_", plot_specs$plot_name)
+
+# Extract individual plots for backward compatibility
+p_dt <- change_plots$p_dt
+p_ct <- change_plots$p_ct
+p_orict <- change_plots$p_orict
+p_navct <- change_plots$p_navct
+p_speed <- change_plots$p_speed
+p_teleport <- change_plots$p_teleport
+p_dwell <- change_plots$p_dwell
+p_teleport_dt <- change_plots$p_teleport_dt
+
+print("Created all change score correlation plots")
+```
+
+```{r create-mean-score-plots, include=FALSE}
+# NEW: Define plot specifications for mean scores
+mean_plot_specs <- tribble(
+  ~var_name,                ~label,                                        ~plot_name,
+  "Distance",               "Mean Distance Traveled (m)",                  "dt_mean",
+  "Total_Time",             "Mean Total Time (s)",                         "ct_mean",
+  "Orientation_Time",       "Mean Orientation Time (s)",                   "orict_mean",
+  "Navigation_Time",        "Mean Navigation Time (s)",                    "navct_mean",
+  "Speed",                  "Mean Speed (m/s)",                            "speed_mean",
+  "Teleportations",         "Mean Teleportations (count)",                 "teleport_mean",
+  "Mean_Dwell",             "Mean Dwell Duration (s)",                     "dwell_mean",
+  "Mean_Teleport_Distance", "Mean Teleport Distance (m)",                  "teleport_dt_mean"
+)
+
+# Create all mean score plots using functional programming
+mean_plots <- map2(mean_plot_specs$var_name, mean_plot_specs$label, function(var, label) {
+  create_correlation_plot(df_merge_mean, var, label)
+})
+
+# Name the plots for easy reference
+names(mean_plots) <- paste0("p_", mean_plot_specs$plot_name)
+
+# Extract individual plots for easy reference
+p_dt_mean <- mean_plots$p_dt_mean
+p_ct_mean <- mean_plots$p_ct_mean
+p_orict_mean <- mean_plots$p_orict_mean
+p_navct_mean <- mean_plots$p_navct_mean
+p_speed_mean <- mean_plots$p_speed_mean
+p_teleport_mean <- mean_plots$p_teleport_mean
+p_dwell_mean <- mean_plots$p_dwell_mean
+p_teleport_dt_mean <- mean_plots$p_teleport_dt_mean
+
+print("Created all mean score correlation plots")
+```
+
+```{r save-change-score-plots, include=FALSE}
+# Save all individual change score plots
+change_plot_names <- paste0("4_corr_", plot_specs$plot_name, "_change")
+walk2(change_plots, change_plot_names, ~ save_plot(.x, .y))
+```
+
+```{r save-mean-score-plots, include=FALSE}
+# NEW: Save all individual mean score plots
+mean_plot_names <- paste0("4_corr_", mean_plot_specs$plot_name)
+walk2(mean_plots, mean_plot_names, ~ save_plot(.x, .y))
+```
+
+```{r create-composite-figure, fig.height=20, fig.width=20, fig.align="center"}
+# Create composite figure with all change score plots arranged in a grid
+# 4x2 layout with 8 plots
+composite_change_plot <- grid.arrange(
+  p_speed, p_ct, p_orict, p_navct,               # Row 1
+  p_dt, p_dwell, p_teleport, p_teleport_dt,    # Row 2
+  ncol = 4, 
+  nrow = 2
+)
+
+# Save change score composite figure
+save_plot(composite_change_plot, "4_corr_change_composite", width = 20, height = 20)
+```
+
+```{r create-mean-composite-figure, fig.height=20, fig.width=20, fig.align="center"}
+# NEW: Create composite figure with all mean score plots arranged in a grid
+# 4x2 layout with 8 plots
+composite_mean_plot <- grid.arrange(
+  p_speed_mean, p_ct_mean, p_orict_mean, p_navct_mean,               # Row 1
+  p_dt_mean, p_dwell_mean, p_teleport_mean, p_teleport_dt_mean,     # Row 2
+  ncol = 4, 
+  nrow = 2
+)
+
+# Save mean score composite figure
+save_plot(composite_mean_plot, "4_corr_mean_composite", width = 20, height = 20)
+```
+
+```{r summary-statistics, include=FALSE}
+# Generate descriptive statistics for change scores
+change_descriptive_stats <- df_merge %>%
+  group_by(Age) %>%
+  summarise(
+    n = n(),
+    across(c(NARA, Total_Time, Orientation_Time, Navigation_Time, Distance, 
+             Speed, Mean_Dwell, Teleportations, Mean_Teleport_Distance), 
+           list(mean = ~ round(mean(.x, na.rm = TRUE), 2),
+                sd = ~ round(sd(.x, na.rm = TRUE), 2)),
+           .names = "{.col}_{.fn}"),
+    .groups = 'drop'
+  )
+
+print("Descriptive statistics by age group (change scores):")
+print(change_descriptive_stats)
+
+# NEW: Generate descriptive statistics for mean scores
+mean_descriptive_stats <- df_merge_mean %>%
+  group_by(Age) %>%
+  summarise(
+    n = n(),
+    across(c(NARA, Total_Time, Orientation_Time, Navigation_Time, Distance, 
+             Speed, Mean_Dwell, Teleportations, Mean_Teleport_Distance), 
+           list(mean = ~ round(mean(.x, na.rm = TRUE), 2),
+                sd = ~ round(sd(.x, na.rm = TRUE), 2)),
+           .names = "{.col}_{.fn}"),
+    .groups = 'drop'
+  )
+
+print("Descriptive statistics by age group (mean scores):")
+print(mean_descriptive_stats)
+
+# Range information for change scores
+change_ranges <- df_merge %>%
+  summarise(
+    across(c(Total_Time, Orientation_Time, Navigation_Time, Distance, 
+             Speed, Mean_Dwell, Teleportations, Mean_Teleport_Distance),
+           list(min = ~ round(min(.x, na.rm = TRUE), 2),
+                max = ~ round(max(.x, na.rm = TRUE), 2)),
+           .names = "{.col}_{.fn}")
+  )
+
+print("Change score ranges (Block 3 - Block 1):")
+print(change_ranges)
+
+# NEW: Range information for mean scores
+mean_ranges <- df_merge_mean %>%
+  summarise(
+    across(c(Total_Time, Orientation_Time, Navigation_Time, Distance, 
+             Speed, Mean_Dwell, Teleportations, Mean_Teleport_Distance),
+           list(min = ~ round(min(.x, na.rm = TRUE), 2),
+                max = ~ round(max(.x, na.rm = TRUE), 2)),
+           .names = "{.col}_{.fn}")
+  )
+
+print("Mean score ranges (across all blocks):")
+print(mean_ranges)
+```

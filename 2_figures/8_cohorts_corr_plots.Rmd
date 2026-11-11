@@ -1,0 +1,474 @@
+---
+title: "NARA Cohort Correlation Plots Code - OAHigh vs. OALow"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r global-options, include=FALSE}
+source(file.path(Sys.getenv("NAVCITY_CODE"), "setup.R"), local = TRUE)   # data paths, sample filter, fixes
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r loading-libraries, include=FALSE}
+# Load required libraries for data analysis and visualization
+library(tidyverse)    # Data manipulation and ggplot2
+library(plotrix)      # For std.error function
+library(gridExtra)    # Arranging multiple plots
+library(scales)       # Scale formatting
+```
+
+```{r setup-paths, include=FALSE}
+# Define file paths - MODIFY THESE FOR YOUR SYSTEM
+data_path <- paper_data_path
+output_path <- file.path(Sys.getenv("ANALYSIS_ROOT"), "output", "figures")
+dir.create(output_path, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r load-and-process-data, include=FALSE}
+# Function to load and standardize navigation data
+load_nav_data <- function(file_path, age_group) {
+  data <- read.csv(file_path)
+  
+  data <- data %>%
+    select(-1) %>%
+    mutate(
+      Group = age_group,
+      Block_Num = as.factor(Block_Num)
+    )
+  
+  return(data)
+}
+
+# Load navigation datasets
+ya_nav_data <- load_nav_data(file.path(navcity_path, "ya_merged_results.csv"), "YA")
+oa_nav_data <- load_nav_data(file.path(navcity_path, "oa_merged_results.csv"), "OA")
+
+# Load non-navigation data
+non_nav_data <- read.csv(file.path(paper_data_path, "non_nav_data.csv")) %>%
+  select(-Group)
+
+# Combine navigation datasets
+all_nav_data <- bind_rows(ya_nav_data, oa_nav_data) %>%
+  mutate(Age = factor(Group, levels = c("YA", "OA")))
+
+print(paste("Loaded navigation data for", nrow(all_nav_data), "trials"))
+print(paste("Loaded non-navigation data for", nrow(non_nav_data), "participants"))
+```
+
+```{r calculate-block-means, include=FALSE}
+# Calculate per-participant per-block means
+block_means <- all_nav_data %>%
+  group_by(Participant, Block_Num, Age) %>%
+  summarise(
+    Total_Time = mean(Total_Time, na.rm = TRUE),
+    Orientation_Time = mean(Orientation_Time, na.rm = TRUE),
+    Navigation_Time = mean(Navigation_Time, na.rm = TRUE),
+    Distance = mean(Distance, na.rm = TRUE),
+    Speed = mean(Speed, na.rm = TRUE),
+    Mean_Dwell = mean(Mean_Dwell, na.rm = TRUE),
+    Teleportations = mean(Teleportations, na.rm = TRUE),
+    Mean_Teleport_Distance = mean(Mean_Teleport_Distance, na.rm = TRUE),
+    .groups = 'drop'
+  )
+```
+
+```{r calculate-mean-scores-and-cohorts, include=FALSE}
+# Calculate mean across all blocks for each participant (matches script 4 approach)
+mean_scores <- block_means %>%
+  group_by(Participant, Age) %>%
+  summarise(
+    Total_Time = mean(Total_Time, na.rm = TRUE),
+    Orientation_Time = mean(Orientation_Time, na.rm = TRUE),
+    Navigation_Time = mean(Navigation_Time, na.rm = TRUE),
+    Distance = mean(Distance, na.rm = TRUE),
+    Speed = mean(Speed, na.rm = TRUE),
+    Mean_Dwell = mean(Mean_Dwell, na.rm = TRUE),
+    Teleportations = mean(Teleportations, na.rm = TRUE),
+    Mean_Teleport_Distance = mean(Mean_Teleport_Distance, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+# Merge with NARA scores and create cohort labels (NARA cutoff = 3.5, matches script 6)
+df_merge_mean <- mean_scores %>%
+  left_join(non_nav_data, by = "Participant") %>%
+  filter(!is.na(NARA)) %>%
+  mutate(
+    Cohort = case_when(
+      Age == "YA" ~ "ya",
+      Age == "OA" & NARA >= 3.5 ~ "oa_high",
+      Age == "OA" & NARA <  3.5 ~ "oa_low",
+      TRUE ~ NA_character_
+    ),
+    Cohort = factor(Cohort, levels = c("ya", "oa_high", "oa_low"))
+  )
+
+# OA-only dataset (the focus of this script)
+df_oa <- df_merge_mean %>%
+  filter(Cohort %in% c("oa_high", "oa_low")) %>%
+  mutate(Cohort = factor(Cohort, levels = c("oa_high", "oa_low")))
+
+# Per-cohort datasets for stats
+oa_high_data <- filter(df_oa, Cohort == "oa_high")
+oa_low_data  <- filter(df_oa, Cohort == "oa_low")
+
+print("Cohort distribution (mean scores):")
+print(table(df_merge_mean$Cohort, useNA = "ifany"))
+print(paste("OAHigh participants:", nrow(oa_high_data)))
+print(paste("OALow participants:",  nrow(oa_low_data)))
+```
+
+```{r calculate-change-scores, include=FALSE}
+# OPTIONAL: also build change-score version for parity with script 4
+change_scores <- block_means %>%
+  filter(Block_Num %in% c("1", "3")) %>%
+  pivot_wider(
+    names_from = Block_Num,
+    values_from = c(Total_Time, Orientation_Time, Navigation_Time,
+                    Distance, Speed, Mean_Dwell, Teleportations, Mean_Teleport_Distance),
+    names_sep = "_Block_"
+  ) %>%
+  mutate(
+    Total_Time             = Total_Time_Block_3             - Total_Time_Block_1,
+    Orientation_Time       = Orientation_Time_Block_3       - Orientation_Time_Block_1,
+    Navigation_Time        = Navigation_Time_Block_3        - Navigation_Time_Block_1,
+    Distance               = Distance_Block_3               - Distance_Block_1,
+    Speed                  = Speed_Block_3                  - Speed_Block_1,
+    Mean_Dwell             = Mean_Dwell_Block_3             - Mean_Dwell_Block_1,
+    Teleportations         = Teleportations_Block_3         - Teleportations_Block_1,
+    Mean_Teleport_Distance = Mean_Teleport_Distance_Block_3 - Mean_Teleport_Distance_Block_1
+  ) %>%
+  select(Participant, Age, Total_Time, Orientation_Time, Navigation_Time,
+         Distance, Speed, Mean_Dwell, Teleportations, Mean_Teleport_Distance)
+
+df_merge_change <- change_scores %>%
+  left_join(non_nav_data, by = "Participant") %>%
+  filter(!is.na(NARA)) %>%
+  mutate(
+    Cohort = case_when(
+      Age == "YA" ~ "ya",
+      Age == "OA" & NARA >= 3.5 ~ "oa_high",
+      Age == "OA" & NARA <  3.5 ~ "oa_low",
+      TRUE ~ NA_character_
+    ),
+    Cohort = factor(Cohort, levels = c("ya", "oa_high", "oa_low"))
+  )
+
+df_oa_change <- df_merge_change %>%
+  filter(Cohort %in% c("oa_high", "oa_low")) %>%
+  mutate(Cohort = factor(Cohort, levels = c("oa_high", "oa_low")))
+```
+
+```{r plotting-functions, include=FALSE}
+# Save plots helper
+save_plot <- function(plot, filename, width = 5, height = 5) {
+  ggsave(
+    filename = file.path(output_path, paste0(filename, ".svg")),
+    plot = plot,
+    width = width,
+    height = height
+  )
+  cat("Saved:", filename, "\n")
+}
+
+# Cohort palette (matches script 6: OAHigh = darker blue, OALow = lighter blue, YA = pink)
+cohort_colors_oa <- c('oa_high' = '#325AF5', 'oa_low' = '#8A9AFF')
+cohort_colors_all <- c('ya' = '#FF9FAF', 'oa_high' = '#325AF5', 'oa_low' = '#8A9AFF')
+
+# OAHigh vs. OALow correlation plot
+create_oa_corr_plot <- function(data, x_var, x_label, colors = cohort_colors_oa) {
+  ggplot(data, aes(x = .data[[x_var]], y = NARA, color = Cohort, fill = Cohort)) +
+    geom_point(size = 2, position = position_jitter(h = 0.18, w = 0)) +
+    scale_color_manual(values = colors,
+                       labels = c("oa_high" = expression(OA[High]),
+                                  "oa_low"  = expression(OA[Low]))) +
+    scale_fill_manual(values = colors,
+                      labels = c("oa_high" = expression(OA[High]),
+                                 "oa_low"  = expression(OA[Low]))) +
+    scale_y_continuous(limits = c(0, 8), breaks = seq(0, 8, by = 1)) +
+    stat_smooth(method = 'lm', formula = y ~ x) +
+    labs(
+      x = x_label,
+      y = "NARA Score",
+      color = "Cohort"
+    ) +
+    theme_classic() +
+    theme(
+      panel.background = element_rect(fill = "white", linewidth = 0.5, colour = "#242526"),
+      axis.line = element_line(linewidth = 0.5, colour = "#242526"),
+      axis.ticks = element_line(linewidth = 0.2, colour = "#242526"),
+      plot.title = element_text(hjust = 0.5),
+      axis.text.x = element_text(size = 20),
+      axis.text.y = element_text(size = 20),
+      axis.title.y = element_text(size = 20),
+      axis.title.x = element_text(size = 20),
+      legend.position = 'none'
+    )
+}
+
+# 3-cohort version (YA + OAHigh + OALow) for context plots
+create_three_cohort_corr_plot <- function(data, x_var, x_label, colors = cohort_colors_all) {
+  ggplot(data, aes(x = .data[[x_var]], y = NARA, color = Cohort, fill = Cohort)) +
+    geom_point(size = 2, position = position_jitter(h = 0.18, w = 0)) +
+    scale_color_manual(values = colors) +
+    scale_fill_manual(values = colors) +
+    scale_y_continuous(limits = c(0, 8), breaks = seq(0, 8, by = 1)) +
+    stat_smooth(method = 'lm', formula = y ~ x) +
+    labs(
+      x = x_label,
+      y = "NARA Score",
+      color = "Cohort"
+    ) +
+    theme_classic() +
+    theme(
+      panel.background = element_rect(fill = "white", linewidth = 0.5, colour = "#242526"),
+      axis.line = element_line(linewidth = 0.5, colour = "#242526"),
+      axis.ticks = element_line(linewidth = 0.2, colour = "#242526"),
+      plot.title = element_text(hjust = 0.5),
+      axis.text.x = element_text(size = 20),
+      axis.text.y = element_text(size = 20),
+      axis.title.y = element_text(size = 20),
+      axis.title.x = element_text(size = 20),
+      legend.position = 'none'
+    )
+}
+```
+
+```{r create-mean-score-plots, include=FALSE}
+# Plot specifications matching script 4
+plot_specs_mean <- tribble(
+  ~var_name,                ~label,                                        ~plot_name,
+  "Distance",               "Mean Distance Traveled (m)",                  "dt_mean",
+  "Total_Time",             "Mean Total Time (s)",                         "ct_mean",
+  "Orientation_Time",       "Mean Orientation Time (s)",                   "orict_mean",
+  "Navigation_Time",        "Mean Navigation Time (s)",                    "navct_mean",
+  "Speed",                  "Mean Speed (m/s)",                            "speed_mean",
+  "Teleportations",         "Mean Teleportations (count)",                 "teleport_mean",
+  "Mean_Dwell",             "Mean Dwell Duration (s)",                     "dwell_mean",
+  "Mean_Teleport_Distance", "Mean Teleport Distance (m)",                  "teleport_dt_mean"
+)
+
+# OAHigh vs. OALow plots (the reviewer's specific request)
+oa_plots_mean <- map2(plot_specs_mean$var_name, plot_specs_mean$label, function(var, label) {
+  create_oa_corr_plot(df_oa, var, label)
+})
+names(oa_plots_mean) <- paste0("p_oa_", plot_specs_mean$plot_name)
+
+# Three-cohort context plots (YA + OAHigh + OALow)
+three_plots_mean <- map2(plot_specs_mean$var_name, plot_specs_mean$label, function(var, label) {
+  create_three_cohort_corr_plot(df_merge_mean, var, label)
+})
+names(three_plots_mean) <- paste0("p_three_", plot_specs_mean$plot_name)
+
+# Extract individual plots for easy reference (OA-only)
+p_oa_dt_mean         <- oa_plots_mean$p_oa_dt_mean
+p_oa_ct_mean         <- oa_plots_mean$p_oa_ct_mean
+p_oa_orict_mean      <- oa_plots_mean$p_oa_orict_mean
+p_oa_navct_mean      <- oa_plots_mean$p_oa_navct_mean
+p_oa_speed_mean      <- oa_plots_mean$p_oa_speed_mean
+p_oa_teleport_mean   <- oa_plots_mean$p_oa_teleport_mean
+p_oa_dwell_mean      <- oa_plots_mean$p_oa_dwell_mean
+p_oa_teleport_dt_mean <- oa_plots_mean$p_oa_teleport_dt_mean
+
+print("Created all OAHigh vs. OALow correlation plots (mean scores)")
+print("Created all three-cohort correlation plots (mean scores)")
+```
+
+```{r create-change-score-plots, include=FALSE}
+# OPTIONAL: same plots for change scores
+plot_specs_change <- tribble(
+  ~var_name,                ~label,                                   ~plot_name,
+  "Distance",               "\u0394 Distance Traveled (m)",           "dt",
+  "Total_Time",             "\u0394 Total Time (s)",                  "ct",
+  "Orientation_Time",       "\u0394 Orientation Time (s)",            "orict",
+  "Navigation_Time",        "\u0394 Navigation Time (s)",             "navct",
+  "Speed",                  "\u0394 Speed (m/s)",                     "speed",
+  "Teleportations",         "\u0394 Teleportations (count)",          "teleport",
+  "Mean_Dwell",             "\u0394 Dwell Duration (s)",              "dwell",
+  "Mean_Teleport_Distance", "\u0394 Teleport Distance (m)",           "teleport_dt"
+)
+
+oa_plots_change <- map2(plot_specs_change$var_name, plot_specs_change$label, function(var, label) {
+  create_oa_corr_plot(df_oa_change, var, label)
+})
+names(oa_plots_change) <- paste0("p_oa_", plot_specs_change$plot_name, "_change")
+```
+
+```{r save-individual-plots, include=FALSE}
+# Save OAHigh vs. OALow plots (mean scores) - the primary deliverable
+oa_mean_names <- paste0("8_cohorts_corr_oa_", plot_specs_mean$plot_name)
+walk2(oa_plots_mean, oa_mean_names, ~ save_plot(.x, .y))
+
+# Save 3-cohort plots (mean scores) - for context
+three_mean_names <- paste0("8_cohorts_corr_all_", plot_specs_mean$plot_name)
+walk2(three_plots_mean, three_mean_names, ~ save_plot(.x, .y))
+
+# Save OAHigh vs. OALow change-score plots
+oa_change_names <- paste0("8_cohorts_corr_oa_", plot_specs_change$plot_name, "_change")
+walk2(oa_plots_change, oa_change_names, ~ save_plot(.x, .y))
+```
+
+```{r create-composite-figures, fig.height=20, fig.width=20, fig.align="center"}
+# Composite: OAHigh vs. OALow (mean scores) - primary deliverable for the response
+composite_oa_mean <- grid.arrange(
+  p_oa_speed_mean, p_oa_ct_mean, p_oa_orict_mean, p_oa_navct_mean,
+  p_oa_dt_mean, p_oa_dwell_mean, p_oa_teleport_mean, p_oa_teleport_dt_mean,
+  ncol = 4, nrow = 2
+)
+save_plot(composite_oa_mean, "8_cohorts_corr_oa_mean_composite", width = 20, height = 20)
+
+# Composite: focused 3-panel figure for the primary outcomes only (speed / distance / nav time)
+# This is the most likely figure to include in the response/manuscript
+composite_oa_primary <- grid.arrange(
+  p_oa_speed_mean, p_oa_dt_mean, p_oa_navct_mean,
+  ncol = 3, nrow = 1
+)
+save_plot(composite_oa_primary, "8_cohorts_corr_oa_primary_composite", width = 15, height = 5)
+
+# Composite: 3-cohort version of primary outcomes
+composite_three_primary <- grid.arrange(
+  three_plots_mean$p_three_speed_mean,
+  three_plots_mean$p_three_dt_mean,
+  three_plots_mean$p_three_navct_mean,
+  ncol = 3, nrow = 1
+)
+save_plot(composite_three_primary, "8_cohorts_corr_three_primary_composite", width = 15, height = 5)
+```
+
+```{r correlation-statistics, include=FALSE}
+# Spearman correlations for OAHigh vs. OALow on each primary and secondary outcome
+# Matches the test used in script 4 / Fig 4 in the manuscript
+
+run_spearman <- function(data, x_var, y_var = "NARA") {
+  out <- suppressWarnings(cor.test(data[[x_var]], data[[y_var]], method = "spearman"))
+  data.frame(
+    rho      = unname(out$estimate),
+    p        = out$p.value,
+    n        = nrow(data)
+  )
+}
+
+# Primary + secondary outcomes
+all_outcomes <- plot_specs_mean$var_name
+
+# Within-cohort correlations (mean scores)
+cohort_corr_results <- map_dfr(all_outcomes, function(var) {
+  rbind(
+    data.frame(Cohort = "OAHigh", Outcome = var, run_spearman(oa_high_data, var)),
+    data.frame(Cohort = "OALow",  Outcome = var, run_spearman(oa_low_data,  var))
+  )
+}) %>%
+  mutate(
+    rho = round(rho, 3),
+    p   = round(p, 4)
+  )
+
+# Combined-OA correlations for context
+oa_combined <- df_merge_mean %>% filter(Age == "OA")
+combined_corr_results <- map_dfr(all_outcomes, function(var) {
+  data.frame(Cohort = "All_OA", Outcome = var, run_spearman(oa_combined, var))
+}) %>%
+  mutate(
+    rho = round(rho, 3),
+    p   = round(p, 4)
+  )
+
+# YA correlations for full context
+ya_combined <- df_merge_mean %>% filter(Age == "YA")
+ya_corr_results <- map_dfr(all_outcomes, function(var) {
+  data.frame(Cohort = "YA", Outcome = var, run_spearman(ya_combined, var))
+}) %>%
+  mutate(
+    rho = round(rho, 3),
+    p   = round(p, 4)
+  )
+
+# Combine into a single table
+all_corr_results <- bind_rows(ya_corr_results, combined_corr_results, cohort_corr_results) %>%
+  mutate(Cohort = factor(Cohort, levels = c("YA", "All_OA", "OAHigh", "OALow"))) %>%
+  arrange(Outcome, Cohort)
+
+print("Spearman correlations (NARA vs. each navigation outcome, averaged across blocks):")
+print(all_corr_results)
+
+# Save the table
+write.csv(all_corr_results,
+          file.path(output_path, "8_cohorts_corr_spearman_results.csv"),
+          row.names = FALSE)
+cat("Saved: 8_cohorts_corr_spearman_results.csv\n")
+```
+
+```{r fisher-z-comparisons, include=FALSE}
+# Fisher's Z to test whether correlations differ between OAHigh and OALow
+# (Same approach as the YA vs. OA Fisher's Z test in the manuscript)
+
+fisher_z_test <- function(r1, n1, r2, n2) {
+  # Spearman's rho can be Fisher-z transformed approximately the same way as Pearson r
+  # for moderate sample sizes (Fieller et al., 1957; standard practice).
+  # Note: variance approximation uses 1.06/(n-3) for Spearman vs. 1/(n-3) for Pearson,
+  # but for consistency with the manuscript's existing YA-vs-OA Fisher's Z (which used
+  # the standard form), we keep the same form here.
+  z1 <- 0.5 * log((1 + r1) / (1 - r1))
+  z2 <- 0.5 * log((1 + r2) / (1 - r2))
+  se <- sqrt(1/(n1 - 3) + 1/(n2 - 3))
+  z  <- (z1 - z2) / se
+  p  <- 2 * (1 - pnorm(abs(z)))
+  data.frame(z = round(z, 3), p = round(p, 4))
+}
+
+n_high <- nrow(oa_high_data)
+n_low  <- nrow(oa_low_data)
+
+fisher_results <- map_dfr(all_outcomes, function(var) {
+  r_high <- cohort_corr_results %>% filter(Cohort == "OAHigh", Outcome == var) %>% pull(rho)
+  r_low  <- cohort_corr_results %>% filter(Cohort == "OALow",  Outcome == var) %>% pull(rho)
+  data.frame(
+    Outcome = var,
+    rho_OAHigh = r_high,
+    rho_OALow  = r_low,
+    n_OAHigh = n_high,
+    n_OALow  = n_low,
+    fisher_z_test(r_high, n_high, r_low, n_low)
+  )
+})
+
+print("Fisher's Z comparison: OAHigh vs. OALow correlations")
+print(fisher_results)
+
+write.csv(fisher_results,
+          file.path(output_path, "8_cohorts_corr_fisher_z_results.csv"),
+          row.names = FALSE)
+cat("Saved: 8_cohorts_corr_fisher_z_results.csv\n")
+```
+
+```{r summary-statistics, include=FALSE}
+# Descriptive statistics by cohort
+cohort_descriptive_stats <- df_merge_mean %>%
+  group_by(Cohort) %>%
+  summarise(
+    n = n(),
+    across(c(NARA, Total_Time, Orientation_Time, Navigation_Time, Distance,
+             Speed, Mean_Dwell, Teleportations, Mean_Teleport_Distance),
+           list(mean = ~ round(mean(.x, na.rm = TRUE), 2),
+                sd   = ~ round(sd(.x,   na.rm = TRUE), 2)),
+           .names = "{.col}_{.fn}"),
+    .groups = 'drop'
+  )
+
+print("Descriptive statistics by cohort (mean scores):")
+print(cohort_descriptive_stats)
+
+# Range of NARA scores by cohort - useful for the range-restriction caveat
+nara_ranges <- df_merge_mean %>%
+  group_by(Cohort) %>%
+  summarise(
+    n = n(),
+    nara_min = min(NARA, na.rm = TRUE),
+    nara_max = max(NARA, na.rm = TRUE),
+    nara_range = nara_max - nara_min,
+    nara_sd = round(sd(NARA, na.rm = TRUE), 2),
+    .groups = 'drop'
+  )
+
+print("NARA score ranges by cohort (relevant for range-restriction interpretation):")
+print(nara_ranges)
+```

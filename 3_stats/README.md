@@ -1,8 +1,6 @@
 # 3_stats
 
-Statistics scripts (R Markdown) for new NavCity analyses. Read outcome tables from
-`03_data/derivatives/navcity/` (built by `../1_outcomes`).
-
-To start from the NavAging paper's stats, copy them from
-`06_releases/paper_navaging/stat_tests/` (do not edit them there) and set
-`data_path` to the derivatives folder. File and column names are unchanged; see `../README.md`.
+The statistics (R Markdown), one folder per kind of analysis: `main_lmm`, `cohorts_lmm`,
+`corrs`, `sensitivity`, `nara`, `demographics`. Run them with `../run_analysis.R` for an
+analysis folder in `05_analyses/`; tables and reports go to `<analysis>/output/stats/<folder>/`.
+See the main README ("2_figures and 3_stats") for what each one does and what was changed.

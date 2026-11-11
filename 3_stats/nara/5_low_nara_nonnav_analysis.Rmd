@@ -1,0 +1,633 @@
+---
+title: "Non-Navigation Cognitive/Behavioral Analysis: Low NARA Scorers (BNC01 & BNC037)"
+author: "Analysis"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+source(file.path(Sys.getenv("NAVCITY_CODE"), "setup.R"), local = TRUE)   # data paths, sample filter, fixes
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width = 10, fig.height = 6)
+```
+
+## Introduction
+
+This analysis examines the cognitive and behavioral test performance of two young adult participants (BNC01 and BNC037) who scored below the NARA cutoff of 3.5, comparing them to the rest of the young adult cohort.
+
+```{r load-libraries}
+library(tidyverse)
+library(ggplot2)
+library(knitr)
+library(patchwork)
+```
+
+```{r load-data}
+# Load the data
+non_nav <- read.csv(file.path(paper_data_path, "non_nav_data.csv"))
+
+# Filter to YA group only
+ya_non_nav <- non_nav %>%
+  filter(Group == "YA")
+
+# Identify low NARA scorers
+low_nara <- c("BNC01", "BNC37")
+
+# Add grouping variable
+ya_non_nav <- ya_non_nav %>%
+  mutate(NARA_Group = case_when(
+    Participant %in% low_nara ~ "Low NARA (< 3.5)",
+    TRUE ~ "Normal NARA"
+  ))
+
+# Show basic info
+cat("Total YA participants:", nrow(ya_non_nav), "\n")
+cat("Low NARA participants:", sum(ya_non_nav$Participant %in% low_nara), "\n")
+cat("Normal NARA participants:", sum(!ya_non_nav$Participant %in% low_nara), "\n\n")
+```
+
+## Data Preparation
+
+```{r data-prep}
+# Select key measures of interest
+# Note: Some columns are stored as strings and need conversion
+
+# Convert string columns to numeric where appropriate
+ya_non_nav_clean <- ya_non_nav %>%
+  mutate(
+    NBWT_ON_Mean = as.numeric(NBWT_ON_Mean),
+    # Calculate Trails B - A
+    Trails_BA_Diff = Trails_B_CT - Trails_A_CT
+  )
+
+# Select measures of interest for analysis
+measures_of_interest <- ya_non_nav_clean %>%
+  select(
+    Participant, NARA_Group, Group, NARA,
+    # Sleep and subjective measures
+    PSQI, SSS_Pre, SSS_Post, SSQ_Pre, SSQ_Post, SSQ_Diff,
+    # Cognitive measures
+    SBSOD, MiniCog,
+    Trails_A_CT, Trails_A_Dwell, Trails_B_CT, Trails_B_Dwell, 
+    Trails_BA_Diff, SetShifting,
+    Corsi_Score_Total, Corsi_Score_Mean, Corsi_Span
+  ) %>%
+  ungroup()
+
+# Show summary
+cat("Measures included in analysis:\n")
+cat(paste(setdiff(colnames(measures_of_interest), c("Participant", "NARA_Group")), 
+          collapse = ", "), "\n\n")
+
+# Show data for low NARA participants
+kable(measures_of_interest %>% 
+        filter(Participant %in% low_nara) %>%
+        arrange(NARA),
+      caption = "All Measures for BNC01 and BNC037", digits = 2)
+```
+
+## Summary Statistics
+
+```{r summary-stats}
+# Calculate summary statistics by NARA group
+numeric_cols <- measures_of_interest %>%
+  select(where(is.numeric), -Group, -NARA) %>%
+  colnames()
+
+summary_stats <- measures_of_interest %>%
+  group_by(NARA_Group) %>%
+  summarise(
+    N = n(),
+    across(all_of(numeric_cols), 
+           list(Mean = ~mean(., na.rm = TRUE), 
+                SD = ~sd(., na.rm = TRUE)),
+           .names = "{.col}_{.fn}")
+  ) %>%
+  ungroup()
+
+# Reshape for better display
+summary_long <- summary_stats %>%
+  pivot_longer(-c(NARA_Group, N), 
+               names_to = "Metric", 
+               values_to = "Value") %>%
+  separate(Metric, into = c("Measure", "Stat"), sep = "_(?=[^_]*$)") %>%
+  pivot_wider(names_from = Stat, values_from = Value) %>%
+  arrange(Measure)
+
+kable(summary_long, digits = 2, 
+      caption = "Summary Statistics: Low NARA vs Normal NARA Young Adults")
+```
+
+## Distribution Comparisons
+
+```{r distributions, fig.height=12}
+# Create color palette
+colors <- c("Low NARA (< 3.5)" = "#e74c3c", "Normal NARA" = "#3498db")
+
+# Select key measures to visualize
+key_measures <- c("PSQI", "SBSOD", "SSS_Pre", "SSS_Post", "SSQ_Diff",
+                  "Trails_A_CT", "Trails_B_CT", "Trails_BA_Diff",
+                  "Corsi_Span", "MiniCog", "SetShifting")
+
+# Create plots
+plot_list <- list()
+
+for (measure in key_measures) {
+  p <- ggplot(measures_of_interest, 
+              aes(x = NARA_Group, y = .data[[measure]], color = NARA_Group)) +
+    geom_jitter(width = 0.2, size = 2, alpha = 0.6) +
+    geom_point(data = measures_of_interest %>% filter(Participant %in% low_nara),
+               aes(x = NARA_Group, y = .data[[measure]]), 
+               color = "#c0392b", size = 4, shape = 17) +
+    stat_summary(fun = mean, geom = "crossbar", width = 0.5, color = "black") +
+    scale_color_manual(values = colors) +
+    labs(title = measure, x = "", y = "") +
+    theme_minimal() +
+    theme(legend.position = "none")
+  
+  plot_list[[measure]] <- p
+}
+
+# Arrange plots
+wrap_plots(plot_list, ncol = 3) +
+  plot_annotation(
+    title = "Distribution of Cognitive/Behavioral Measures",
+    subtitle = "Red triangles indicate BNC01 and BNC037; black bars show group means"
+  )
+```
+
+## Correlation with NARA Scores
+
+```{r nara-correlations, fig.height=10}
+# Create correlation plots for key measures
+c1 <- ggplot(measures_of_interest, aes(x = NARA, y = SBSOD)) +
+  geom_point(aes(color = NARA_Group), size = 2, alpha = 0.7) +
+  geom_point(data = measures_of_interest %>% filter(Participant %in% low_nara),
+             size = 4, color = "#c0392b", shape = 17) +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed") +
+  geom_vline(xintercept = 3.5, color = "red", linetype = "dotted") +
+  scale_color_manual(values = colors) +
+  labs(title = "SBSOD vs NARA", x = "NARA Score", y = "SBSOD") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+c2 <- ggplot(measures_of_interest, aes(x = NARA, y = Trails_A_CT)) +
+  geom_point(aes(color = NARA_Group), size = 2, alpha = 0.7) +
+  geom_point(data = measures_of_interest %>% filter(Participant %in% low_nara),
+             size = 4, color = "#c0392b", shape = 17) +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed") +
+  geom_vline(xintercept = 3.5, color = "red", linetype = "dotted") +
+  scale_color_manual(values = colors) +
+  labs(title = "Trails A vs NARA", x = "NARA Score", y = "Trails A CT (s)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+c3 <- ggplot(measures_of_interest, aes(x = NARA, y = Trails_B_CT)) +
+  geom_point(aes(color = NARA_Group), size = 2, alpha = 0.7) +
+  geom_point(data = measures_of_interest %>% filter(Participant %in% low_nara),
+             size = 4, color = "#c0392b", shape = 17) +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed") +
+  geom_vline(xintercept = 3.5, color = "red", linetype = "dotted") +
+  scale_color_manual(values = colors) +
+  labs(title = "Trails B vs NARA", x = "NARA Score", y = "Trails B CT (s)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+c4 <- ggplot(measures_of_interest, aes(x = NARA, y = Trails_BA_Diff)) +
+  geom_point(aes(color = NARA_Group), size = 2, alpha = 0.7) +
+  geom_point(data = measures_of_interest %>% filter(Participant %in% low_nara),
+             size = 4, color = "#c0392b", shape = 17) +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed") +
+  geom_vline(xintercept = 3.5, color = "red", linetype = "dotted") +
+  scale_color_manual(values = colors) +
+  labs(title = "Trails B-A vs NARA", x = "NARA Score", y = "Trails B-A (s)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+c5 <- ggplot(measures_of_interest, aes(x = NARA, y = Corsi_Span)) +
+  geom_point(aes(color = NARA_Group), size = 2, alpha = 0.7) +
+  geom_point(data = measures_of_interest %>% filter(Participant %in% low_nara),
+             size = 4, color = "#c0392b", shape = 17) +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed") +
+  geom_vline(xintercept = 3.5, color = "red", linetype = "dotted") +
+  scale_color_manual(values = colors) +
+  labs(title = "Corsi Span vs NARA", x = "NARA Score", y = "Corsi Span") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+c6 <- ggplot(measures_of_interest, aes(x = NARA, y = PSQI)) +
+  geom_point(aes(color = NARA_Group), size = 2, alpha = 0.7) +
+  geom_point(data = measures_of_interest %>% filter(Participant %in% low_nara),
+             size = 4, color = "#c0392b", shape = 17) +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed") +
+  geom_vline(xintercept = 3.5, color = "red", linetype = "dotted") +
+  scale_color_manual(values = colors) +
+  labs(title = "PSQI vs NARA", x = "NARA Score", y = "PSQI Score") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+(c1 + c2 + c3) / (c4 + c5 + c6) +
+  plot_annotation(
+    title = "Cognitive/Behavioral Measures vs NARA Score",
+    subtitle = "Red triangles indicate BNC01 and BNC037"
+  )
+```
+
+```{r correlation-tests}
+# Calculate correlations for all numeric measures
+cor_results <- data.frame()
+
+for (measure in numeric_cols) {
+  if (measure %in% colnames(measures_of_interest)) {
+    test_data <- measures_of_interest %>%
+      select(NARA, !!measure) %>%
+      na.omit()
+    
+    if (nrow(test_data) > 2 && sd(test_data[[measure]]) > 0) {
+      cor_test <- cor.test(test_data$NARA, test_data[[measure]])
+      
+      cor_results <- rbind(cor_results, data.frame(
+        Measure = measure,
+        Correlation = cor_test$estimate,
+        P_Value = cor_test$p.value,
+        N = nrow(test_data)
+      ))
+    }
+  }
+}
+
+cor_results <- cor_results %>%
+  arrange(P_Value)
+
+kable(cor_results, digits = 3, 
+      caption = "Correlations between NARA Score and Cognitive/Behavioral Measures")
+```
+
+## Outlier Detection
+
+### Method 1: IQR Method (Tukey's Fences)
+
+```{r iqr-outliers}
+# Function to detect outliers using IQR method
+detect_iqr_outliers <- function(x) {
+  q1 <- quantile(x, 0.25, na.rm = TRUE)
+  q3 <- quantile(x, 0.75, na.rm = TRUE)
+  iqr <- q3 - q1
+  lower_fence <- q1 - 1.5 * iqr
+  upper_fence <- q3 + 1.5 * iqr
+  x < lower_fence | x > upper_fence
+}
+
+# Detect outliers for each metric
+iqr_outliers <- measures_of_interest %>%
+  select(Participant, NARA_Group, all_of(numeric_cols)) %>%
+  pivot_longer(cols = all_of(numeric_cols), 
+               names_to = "Metric", 
+               values_to = "Value") %>%
+  group_by(Metric) %>%
+  mutate(
+    Q1 = quantile(Value, 0.25, na.rm = TRUE),
+    Q3 = quantile(Value, 0.75, na.rm = TRUE),
+    IQR = Q3 - Q1,
+    Lower_Fence = Q1 - 1.5 * IQR,
+    Upper_Fence = Q3 + 1.5 * IQR,
+    Is_Outlier = Value < Lower_Fence | Value > Upper_Fence,
+    Outlier_Type = case_when(
+      Value < Lower_Fence ~ "Low",
+      Value > Upper_Fence ~ "High",
+      TRUE ~ "Normal"
+    )
+  ) %>%
+  ungroup()
+
+# Summary of outliers for BNC01 and BNC037
+low_nara_iqr <- iqr_outliers %>%
+  filter(Participant %in% low_nara, !is.na(Value)) %>%
+  select(Participant, Metric, Value, Q1, Q3, Lower_Fence, Upper_Fence, 
+         Is_Outlier, Outlier_Type)
+
+kable(low_nara_iqr, digits = 2,
+      caption = "IQR-Based Outlier Detection for BNC01 and BNC037")
+
+# Count outliers by participant
+outlier_counts <- iqr_outliers %>%
+  filter(Is_Outlier) %>%
+  count(Participant, name = "N_Outlier_Metrics") %>%
+  arrange(desc(N_Outlier_Metrics))
+
+kable(head(outlier_counts, 10), 
+      caption = "Participants with Most Outlier Metrics (IQR Method)")
+```
+
+### Method 2: Z-Score Method
+
+```{r zscore-outliers}
+# Calculate z-scores
+zscore_outliers <- measures_of_interest %>%
+  select(Participant, NARA_Group, all_of(numeric_cols)) %>%
+  pivot_longer(cols = all_of(numeric_cols), 
+               names_to = "Metric", 
+               values_to = "Value") %>%
+  group_by(Metric) %>%
+  mutate(
+    Mean = mean(Value, na.rm = TRUE),
+    SD = sd(Value, na.rm = TRUE),
+    Z_Score = (Value - Mean) / SD,
+    Is_Outlier_2SD = abs(Z_Score) > 2,
+    Is_Outlier_3SD = abs(Z_Score) > 3
+  ) %>%
+  ungroup()
+
+# Summary for BNC01 and BNC037
+low_nara_zscore <- zscore_outliers %>%
+  filter(Participant %in% low_nara, !is.na(Value)) %>%
+  select(Participant, Metric, Value, Z_Score, Is_Outlier_2SD, Is_Outlier_3SD)
+
+kable(low_nara_zscore, digits = 2,
+      caption = "Z-Score Based Outlier Detection for BNC01 and BNC037")
+
+# Count outliers by participant (2 SD threshold)
+zscore_counts <- zscore_outliers %>%
+  filter(Is_Outlier_2SD) %>%
+  count(Participant, name = "N_Outlier_Metrics_2SD") %>%
+  arrange(desc(N_Outlier_Metrics_2SD))
+
+kable(head(zscore_counts, 10), 
+      caption = "Participants with Most Outlier Metrics (Z-Score > 2)")
+```
+
+### Method 3: Multivariate Outlier Detection (Mahalanobis Distance)
+
+```{r mahalanobis-outliers}
+# Select key measures for multivariate analysis (complete cases only)
+key_multivariate_measures <- c("SBSOD", "Trails_A_CT", "Trails_B_CT", 
+                                "Corsi_Span", "PSQI")
+
+# Create complete dataset
+measures_complete <- measures_of_interest %>%
+  select(Participant, NARA_Group, all_of(key_multivariate_measures)) %>%
+  na.omit() %>%
+  ungroup()
+
+# Extract only numeric columns for Mahalanobis calculation
+cog_metrics <- measures_complete %>%
+  select(all_of(key_multivariate_measures))
+
+# Verify all numeric
+cat("Columns in cog_metrics:", paste(colnames(cog_metrics), collapse = ", "), "\n")
+cat("All columns numeric?", all(sapply(cog_metrics, is.numeric)), "\n\n")
+
+# Calculate Mahalanobis distance
+if (nrow(cog_metrics) > ncol(cog_metrics)) {
+  mahal_dist <- mahalanobis(cog_metrics, 
+                             center = colMeans(cog_metrics),
+                             cov = cov(cog_metrics))
+  
+  # Chi-square critical value (df = number of variables, p = 0.001)
+  critical_value <- qchisq(0.999, df = ncol(cog_metrics))
+  
+  # Add Mahalanobis distance back to participant data
+  measures_complete <- measures_complete %>%
+    mutate(
+      Mahalanobis_Distance = mahal_dist,
+      Is_Multivariate_Outlier = mahal_dist > critical_value
+    )
+  
+  # Show results for all participants
+  mahal_results <- measures_complete %>%
+    arrange(desc(Mahalanobis_Distance)) %>%
+    mutate(Rank = row_number())
+  
+  kable(head(mahal_results, 10), digits = 2,
+        caption = "Top 10 Multivariate Outliers (Mahalanobis Distance)")
+  
+  # Highlight BNC01 and BNC037
+  low_nara_mahal <- mahal_results %>%
+    filter(Participant %in% low_nara)
+  
+  kable(low_nara_mahal, digits = 2,
+        caption = "Mahalanobis Distance for BNC01 and BNC037")
+  
+  # Visualize
+  ggplot(mahal_results, aes(x = reorder(Participant, Mahalanobis_Distance), 
+                            y = Mahalanobis_Distance)) +
+    geom_point(aes(color = NARA_Group), size = 2, alpha = 0.6) +
+    geom_point(data = low_nara_mahal, 
+               aes(x = Participant, y = Mahalanobis_Distance),
+               color = "#c0392b", size = 4, shape = 17) +
+    geom_hline(yintercept = critical_value, color = "red", linetype = "dashed") +
+    annotate("text", x = Inf, y = critical_value, 
+             label = paste0("Critical value (p=0.001): ", round(critical_value, 2)),
+             hjust = 1.1, vjust = -0.5, color = "red") +
+    scale_color_manual(values = colors) +
+    labs(title = "Multivariate Outlier Detection (Mahalanobis Distance)",
+         subtitle = paste("Based on:", paste(key_multivariate_measures, collapse = ", ")),
+         x = "Participant", y = "Mahalanobis Distance") +
+    theme_minimal() +
+    theme(axis.text.x = element_blank(),
+          axis.ticks.x = element_blank())
+}
+```
+
+### Outlier Detection Summary
+
+```{r outlier-summary}
+# Combine all outlier detection results
+outlier_summary <- measures_of_interest %>%
+  select(Participant, NARA_Group, NARA) %>%
+  left_join(
+    iqr_outliers %>%
+      filter(Is_Outlier) %>%
+      count(Participant, name = "N_IQR_Outliers"),
+    by = "Participant"
+  ) %>%
+  left_join(
+    zscore_outliers %>%
+      filter(Is_Outlier_2SD) %>%
+      count(Participant, name = "N_ZScore_Outliers"),
+    by = "Participant"
+  ) %>%
+  left_join(
+    measures_complete %>%
+      select(Participant, Mahalanobis_Distance, Is_Multivariate_Outlier),
+    by = "Participant"
+  ) %>%
+  replace_na(list(N_IQR_Outliers = 0, N_ZScore_Outliers = 0, 
+                  Is_Multivariate_Outlier = FALSE)) %>%
+  mutate(
+    Total_Outlier_Flags = N_IQR_Outliers + N_ZScore_Outliers + 
+                          as.integer(Is_Multivariate_Outlier)
+  ) %>%
+  arrange(desc(Total_Outlier_Flags))
+
+kable(head(outlier_summary, 10), digits = 2,
+      caption = "Combined Outlier Detection Summary (Top 10)")
+
+# Highlight BNC01 and BNC037
+low_nara_summary <- outlier_summary %>%
+  filter(Participant %in% low_nara)
+
+kable(low_nara_summary, digits = 2,
+      caption = "Combined Outlier Summary for BNC01 and BNC037")
+```
+
+### Visualization: Outlier Status Across Metrics
+
+```{r outlier-heatmap, fig.height=8}
+# Create a heatmap of outlier status
+outlier_heatmap_data <- iqr_outliers %>%
+  select(Participant, Metric, Is_Outlier, Outlier_Type) %>%
+  mutate(
+    Outlier_Value = case_when(
+      Outlier_Type == "High" ~ 1,
+      Outlier_Type == "Low" ~ -1,
+      TRUE ~ 0
+    )
+  )
+
+# Focus on participants with any outliers
+participants_with_outliers <- outlier_heatmap_data %>%
+  filter(Is_Outlier) %>%
+  pull(Participant) %>%
+  unique()
+
+if (length(participants_with_outliers) > 0) {
+  ggplot(outlier_heatmap_data %>% filter(Participant %in% participants_with_outliers),
+         aes(x = Metric, y = Participant, fill = factor(Outlier_Value))) +
+    geom_tile(color = "white", linewidth = 0.5) +
+    geom_text(data = outlier_heatmap_data %>% 
+                filter(Participant %in% low_nara, Is_Outlier),
+              aes(label = "★"), size = 6, color = "gold") +
+    scale_fill_manual(values = c("-1" = "#3498db", "0" = "white", "1" = "#e74c3c"),
+                      labels = c("Low Outlier", "Normal", "High Outlier"),
+                      name = "Outlier Status") +
+    labs(title = "Outlier Detection Heatmap (IQR Method)",
+         subtitle = "Gold stars indicate BNC01 and BNC037",
+         x = "Metric", y = "Participant") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+}
+```
+
+## Statistical Comparisons
+
+```{r statistical-tests}
+# T-tests comparing low NARA vs normal NARA
+test_results <- data.frame()
+
+for (measure in numeric_cols) {
+  if (measure %in% colnames(measures_of_interest)) {
+    test_data <- measures_of_interest %>%
+      select(NARA_Group, !!measure) %>%
+      na.omit()
+    
+    low_nara_vals <- test_data %>% 
+      filter(NARA_Group == "Low NARA (< 3.5)") %>% 
+      pull(measure)
+    
+    normal_nara_vals <- test_data %>% 
+      filter(NARA_Group == "Normal NARA") %>% 
+      pull(measure)
+    
+    if (length(low_nara_vals) > 0 && length(normal_nara_vals) > 1 && 
+        sd(c(low_nara_vals, normal_nara_vals)) > 0) {
+      
+      t_test <- t.test(low_nara_vals, normal_nara_vals)
+      
+      test_results <- rbind(test_results, data.frame(
+        Measure = measure,
+        Low_NARA_Mean = mean(low_nara_vals, na.rm = TRUE),
+        Normal_NARA_Mean = mean(normal_nara_vals, na.rm = TRUE),
+        Difference = mean(low_nara_vals, na.rm = TRUE) - mean(normal_nara_vals, na.rm = TRUE),
+        T_Statistic = t_test$statistic,
+        P_Value = t_test$p.value,
+        N_Low = length(low_nara_vals),
+        N_Normal = length(normal_nara_vals)
+      ))
+    }
+  }
+}
+
+test_results <- test_results %>%
+  arrange(P_Value)
+
+kable(test_results, digits = 3, 
+      caption = "Statistical Comparisons: Low NARA vs Normal NARA")
+```
+
+## Percentile Rankings
+
+```{r percentile-ranks}
+# Calculate percentile ranks for BNC01 and BNC037
+percentile_data <- measures_of_interest %>%
+  filter(Participant %in% low_nara) %>%
+  select(Participant, all_of(numeric_cols)) %>%
+  pivot_longer(-Participant, names_to = "Measure", values_to = "Value") %>%
+  filter(!is.na(Value)) %>%
+  left_join(
+    measures_of_interest %>%
+      select(Participant, all_of(numeric_cols)) %>%
+      pivot_longer(-Participant, names_to = "Measure", values_to = "Value") %>%
+      filter(!is.na(Value)) %>%
+      group_by(Measure) %>%
+      summarise(All_Values = list(Value)),
+    by = "Measure"
+  ) %>%
+  rowwise() %>%
+  mutate(
+    Percentile = sum(Value >= unlist(All_Values)) / length(unlist(All_Values)) * 100
+  ) %>%
+  select(Participant, Measure, Value, Percentile) %>%
+  arrange(Participant, Percentile)
+
+kable(percentile_data, digits = 2,
+      caption = "Percentile Rankings for BNC01 and BNC037")
+
+# Visualize percentiles
+ggplot(percentile_data, aes(x = Measure, y = Percentile, fill = Participant)) +
+  geom_col(position = "dodge") +
+  geom_hline(yintercept = 50, linetype = "dashed", color = "gray50") +
+  geom_hline(yintercept = c(10, 90), linetype = "dotted", color = "gray70") +
+  scale_fill_manual(values = c("BNC01" = "#e74c3c", "BNC037" = "#c0392b")) +
+  labs(title = "Percentile Rankings for BNC01 and BNC037",
+       subtitle = "Dashed line = 50th percentile; dotted lines = 10th and 90th percentiles",
+       x = "Measure", y = "Percentile Rank") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Conclusion
+
+### Key Findings:
+
+1. **NARA Scores**: BNC01 and BNC037 scored below the 3.5 cutoff on the NARA assessment
+
+2. **Outlier Detection**:
+   - **IQR Method**: Identifies measures where these participants fall outside Tukey's fences
+   - **Z-Score Method**: Flags measures more than 2 standard deviations from the mean
+   - **Mahalanobis Distance**: Detects multivariate outliers across cognitive domains
+   - The summary tables show total outlier flags across all methods
+
+3. **Statistical Comparisons**: T-tests reveal whether the low NARA group differs significantly from normal NARA on each measure
+
+4. **Percentile Rankings**: Show exactly where BNC01 and BNC037 fall in the YA distribution for each measure
+
+### Interpretation:
+
+- **Red triangles** identify BNC01 and BNC037 in scatter plots
+- **Gold stars** in the heatmap indicate statistical outliers
+- Measures where these participants are outliers may represent specific cognitive domains affected by low NARA performance
+- **Percentile ranks below 10%** or **above 90%** suggest extreme performance on that measure
+- The **Mahalanobis distance** reveals if they show unusual patterns across multiple cognitive domains
+
+### Clinical Relevance:
+
+Outlier status on cognitive/behavioral measures combined with low NARA scores could indicate:
+- Cognitive domains most affected in individuals with poor spatial memory
+- Whether low NARA represents a broader cognitive profile or specific deficit
+- Potential subtypes within the YA population worth investigating further
+

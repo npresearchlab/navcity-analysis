@@ -1,0 +1,529 @@
+---
+title: "NavCity Correlation Analyses with FDR Correction"
+author: "Your Name"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: yes
+  html_document:
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+source(file.path(Sys.getenv("NAVCITY_CODE"), "setup.R"), local = TRUE)   # data paths, sample filter, fixes
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Load Required Libraries
+
+```{r libraries}
+library(tidyverse)
+library(broom)
+library(knitr)
+library(kableExtra)
+library(reshape2)
+library(corrplot)
+```
+
+# Data Import and Preparation
+
+```{r import-data}
+# Load all data files
+demographic_data <- read_csv(file.path(paper_data_path, "demographic_data.csv"))
+non_nav <- read_csv(file.path(paper_data_path, "non_nav_data.csv"))
+ya_nav <- read_csv(file.path(navcity_path, "ya_averaged_results.csv"))
+oa_nav <- read_csv(file.path(navcity_path, "oa_averaged_results.csv"))
+
+# Combine YA and OA navigation data
+nav_data <- bind_rows(
+  ya_nav %>% mutate(Group = "YA"),
+  oa_nav %>% mutate(Group = "OA")
+)
+
+# Average navigation metrics across all blocks for each participant
+nav_averaged <- nav_data %>%
+  group_by(Participant, Group) %>%
+  summarise(
+    Mean_Speed = mean(Speed, na.rm = TRUE),
+    Mean_Distance = mean(Distance, na.rm = TRUE),
+    Mean_Navigation_Time = mean(Navigation_Time, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Merge all datasets
+merged_temp <- demographic_data %>%
+  full_join(non_nav, by = "Participant", suffix = c("_demo", "_non_nav")) %>%
+  mutate(Group = coalesce(Group_non_nav, 
+                          if_else(Group_demo == 1, "YA", "OA"))) %>%
+  select(-Group_demo, -Group_non_nav)
+
+merged_data <- merged_temp %>%
+  left_join(nav_averaged, by = c("Participant", "Group"))
+
+cat("Total participants:", nrow(merged_data), "\n")
+cat("YA participants:", sum(merged_data$Group == "YA", na.rm = TRUE), "\n")
+cat("OA participants:", sum(merged_data$Group == "OA", na.rm = TRUE), "\n")
+```
+
+# Create Numeric Variables for Correlation
+
+```{r create-numeric-vars}
+# Create numeric versions of variables for correlation
+merged_data <- merged_data %>%
+  mutate(
+    # VR Experience already numeric (0, 1, 2)
+    VR_Experience_numeric = VR_Experience_Quantified,
+    
+    # Calculate Trails B-A difference (switching cost)
+    Trails_BA_Diff = Trails_B_CT - Trails_A_CT
+  )
+
+# Show coding scheme
+cat("Variable Information:\n")
+cat("- VR Experience: 0 (never), 1 (1-3 times), 2 (>3 times) [Non-parametric]\n")
+cat("- Video Game Usage: Continuous (hours per week) [Non-parametric]\n")
+cat("- SSS Pre: Stanford Sleepiness Scale baseline (1-7) [Non-parametric]\n")
+cat("- SBSOD: Santa Barbara Sense of Direction Scale (higher = better) [Parametric]\n")
+cat("- Trails A: Completion time (lower = better) [Parametric]\n")
+cat("- Trails B: Completion time (lower = better) [Non-parametric]\n")
+cat("- Trails B-A: Cognitive switching cost (higher = worse) [Non-parametric]\n")
+cat("- Corsi Blocks: Total score (higher = better) [Parametric]\n\n")
+
+# Define predictors and outcomes
+predictors <- c(
+  "VR_Experience_numeric",
+  "Video_Game_Experience_Quantified",
+  "SSS_Pre",
+  "SBSOD",
+  "Trails_A_CT",
+  "Trails_B_CT",
+  "Trails_BA_Diff",
+  "Corsi_Score_Total"
+)
+
+predictor_labels <- c(
+  "VR Experience",
+  "Video Game Usage",
+  "SSS Pre",
+  "SBSOD",
+  "Trails A",
+  "Trails B",
+  "Trails B-A (Switch Cost)",
+  "Corsi Total"
+)
+
+# Define which test to use for each predictor
+# Parametric: SBSOD, Trails A, Corsi (use Pearson)
+# Non-parametric: VR Experience, Video Games, SSS, Trails B, Trails B-A (use Spearman)
+predictor_methods <- c(
+  "spearman",  # VR Experience
+  "spearman",  # Video Game Usage
+  "spearman",  # SSS Pre
+  "pearson",   # SBSOD
+  "pearson",   # Trails A
+  "spearman",  # Trails B
+  "spearman",  # Trails B-A
+  "pearson"    # Corsi Total
+)
+
+outcomes <- c(
+  "Mean_Speed",
+  "Mean_Distance",
+  "Mean_Navigation_Time"
+)
+
+outcome_labels <- c(
+  "Mean Speed",
+  "Mean Distance",
+  "Mean Nav Time"
+)
+
+cat("8 Predictors × 3 Outcomes = 24 correlations per group\n")
+cat("Total correlations: 48 (24 YA + 24 OA)\n")
+cat("Parametric tests (Pearson): SBSOD, Trails A, Corsi Total\n")
+cat("Non-parametric tests (Spearman): VR Experience, Video Games, SSS, Trails B, Trails B-A\n")
+cat("FDR correction applied within each age group (24 tests each)\n")
+```
+
+# YA Group Correlations with FDR Correction
+
+```{r ya-correlations}
+cat("=== YOUNGER ADULTS (YA) CORRELATIONS ===\n\n")
+
+# Filter YA data
+ya_data <- merged_data %>% filter(Group == "YA")
+
+cat("YA sample size:", nrow(ya_data), "\n\n")
+
+# Function to compute correlations with specified methods
+compute_correlations <- function(data, predictors, outcomes, methods) {
+  results <- tibble(
+    predictor = rep(predictors, each = length(outcomes)),
+    outcome = rep(outcomes, times = length(predictors)),
+    test_method = rep(methods, each = length(outcomes))
+  ) %>%
+    mutate(
+      correlation = pmap(list(predictor, outcome, test_method), function(pred_var, out_var, test_method) {
+        # Filter to complete cases for this pair
+        valid_indices <- !is.na(data[[pred_var]]) & !is.na(data[[out_var]])
+        
+        if (sum(valid_indices) < 3) {
+          return(tibble(r = NA, p_value = NA, n = 0, method = test_method))
+        }
+        
+        test <- cor.test(data[[pred_var]][valid_indices], 
+                        data[[out_var]][valid_indices], 
+                        method = test_method)
+        tibble(
+          r = test$estimate,
+          p_value = test$p.value,
+          n = sum(valid_indices),
+          method = test_method
+        )
+      })
+    ) %>%
+    unnest(correlation) %>%
+    select(-test_method)
+  
+  return(results)
+}
+
+# Compute all YA correlations
+ya_correlations <- compute_correlations(ya_data, predictors, outcomes, predictor_methods)
+
+# Add FDR correction within YA group
+ya_correlations <- ya_correlations %>%
+  mutate(
+    p_fdr = p.adjust(p_value, method = "fdr")
+  )
+
+# Add labels for better readability
+ya_correlations <- ya_correlations %>%
+  mutate(
+    predictor_label = predictor_labels[match(predictor, predictors)],
+    outcome_label = outcome_labels[match(outcome, outcomes)],
+    test_type = ifelse(method == "pearson", "Pearson", "Spearman")
+  )
+
+# Display correlation table with both raw and FDR-corrected p-values
+cat("YA Correlation Results (with FDR correction):\n\n")
+
+ya_correlations %>%
+  select(Predictor = predictor_label, 
+         Outcome = outcome_label, 
+         Test = test_type,
+         r, p_raw = p_value, p_fdr, n) %>%
+  mutate(
+    r = round(r, 3),
+    p_raw = format(p_raw, scientific = FALSE, digits = 4),
+    p_fdr = format(p_fdr, scientific = FALSE, digits = 4),
+    sig_raw = case_when(
+      as.numeric(p_raw) < 0.001 ~ "***",
+      as.numeric(p_raw) < 0.01 ~ "**",
+      as.numeric(p_raw) < 0.05 ~ "*",
+      TRUE ~ ""
+    ),
+    sig_fdr = case_when(
+      as.numeric(p_fdr) < 0.001 ~ "***",
+      as.numeric(p_fdr) < 0.01 ~ "**",
+      as.numeric(p_fdr) < 0.05 ~ "*",
+      TRUE ~ ""
+    )
+  ) %>%
+  kable(caption = "YA Group: Correlations with Raw and FDR-Corrected P-values") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  scroll_box(height = "600px")
+
+# Count significant correlations (using FDR-corrected p-values)
+ya_sig_summary <- ya_correlations %>%
+  summarise(
+    total = n(),
+    raw_p_05 = sum(p_value < 0.05, na.rm = TRUE),
+    raw_p_01 = sum(p_value < 0.01, na.rm = TRUE),
+    raw_p_001 = sum(p_value < 0.001, na.rm = TRUE),
+    fdr_p_05 = sum(p_fdr < 0.05, na.rm = TRUE),
+    fdr_p_01 = sum(p_fdr < 0.01, na.rm = TRUE),
+    fdr_p_001 = sum(p_fdr < 0.001, na.rm = TRUE)
+  )
+
+cat("\n\nYA Significant Correlations (Raw p-values):\n")
+cat("p < 0.05:", ya_sig_summary$raw_p_05, "out of", ya_sig_summary$total, "\n")
+cat("p < 0.01:", ya_sig_summary$raw_p_01, "out of", ya_sig_summary$total, "\n")
+cat("p < 0.001:", ya_sig_summary$raw_p_001, "out of", ya_sig_summary$total, "\n")
+
+cat("\n\nYA Significant Correlations (FDR-corrected):\n")
+cat("p < 0.05:", ya_sig_summary$fdr_p_05, "out of", ya_sig_summary$total, "\n")
+cat("p < 0.01:", ya_sig_summary$fdr_p_01, "out of", ya_sig_summary$total, "\n")
+cat("p < 0.001:", ya_sig_summary$fdr_p_001, "out of", ya_sig_summary$total, "\n")
+```
+
+## YA Correlation Heatmap (FDR-corrected)
+
+```{r ya-heatmap, fig.width=10, fig.height=8}
+# Create correlation matrix for heatmap
+ya_corr_matrix <- ya_correlations %>%
+  select(predictor_label, outcome_label, r) %>%
+  pivot_wider(names_from = outcome_label, values_from = r) %>%
+  column_to_rownames("predictor_label") %>%
+  as.matrix()
+
+ya_pval_matrix <- ya_correlations %>%
+  select(predictor_label, outcome_label, p_fdr) %>%
+  pivot_wider(names_from = outcome_label, values_from = p_fdr) %>%
+  column_to_rownames("predictor_label") %>%
+  as.matrix()
+
+# Create significance annotations (using FDR-corrected p-values)
+ya_sig_text <- matrix("", nrow = nrow(ya_pval_matrix), ncol = ncol(ya_pval_matrix))
+rownames(ya_sig_text) <- rownames(ya_pval_matrix)
+colnames(ya_sig_text) <- colnames(ya_pval_matrix)
+ya_sig_text[ya_pval_matrix < 0.001] <- "***"
+ya_sig_text[ya_pval_matrix >= 0.001 & ya_pval_matrix < 0.01] <- "**"
+ya_sig_text[ya_pval_matrix >= 0.01 & ya_pval_matrix < 0.05] <- "*"
+
+# Prepare data for ggplot
+ya_corr_df <- as.data.frame(ya_corr_matrix) %>%
+  rownames_to_column("Predictor") %>%
+  pivot_longer(cols = -Predictor, names_to = "Outcome", values_to = "correlation")
+
+ya_sig_df <- as.data.frame(ya_sig_text, stringsAsFactors = FALSE) %>%
+  rownames_to_column("Predictor") %>%
+  pivot_longer(cols = -Predictor, names_to = "Outcome", values_to = "sig")
+
+plot_data <- ya_corr_df %>%
+  left_join(ya_sig_df, by = c("Predictor", "Outcome"))
+
+# Create heatmap
+ggplot(plot_data, aes(x = Outcome, y = Predictor, fill = correlation)) +
+  geom_tile(color = "white", size = 1) +
+  geom_text(aes(label = sig), size = 6, vjust = 0.7, fontface = "bold") +
+  scale_fill_gradient2(
+    low = "blue", mid = "white", high = "red", 
+    midpoint = 0, limit = c(-1, 1), na.value = "grey90",
+    name = "Correlation\nCoefficient"
+  ) +
+  theme_minimal(base_size = 13) +
+  labs(
+    title = "YA Group: Correlation Heatmap (FDR-corrected)",
+    subtitle = "Predictors × Navigation Outcomes (Pearson/Spearman as appropriate)\n* p < 0.05, ** p < 0.01, *** p < 0.001 (FDR-corrected)",
+    x = "Navigation Outcomes", 
+    y = "Predictors"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12, face = "bold"),
+    axis.text.y = element_text(size = 11),
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 10),
+    legend.position = "right"
+  )
+```
+
+# OA Group Correlations with FDR Correction
+
+```{r oa-correlations}
+cat("=== OLDER ADULTS (OA) CORRELATIONS ===\n\n")
+
+# Filter OA data
+oa_data <- merged_data %>% filter(Group == "OA")
+
+cat("OA sample size:", nrow(oa_data), "\n\n")
+
+# Compute all OA correlations
+oa_correlations <- compute_correlations(oa_data, predictors, outcomes, predictor_methods)
+
+# Add FDR correction within OA group
+oa_correlations <- oa_correlations %>%
+  mutate(
+    p_fdr = p.adjust(p_value, method = "fdr")
+  )
+
+# Add labels
+oa_correlations <- oa_correlations %>%
+  mutate(
+    predictor_label = predictor_labels[match(predictor, predictors)],
+    outcome_label = outcome_labels[match(outcome, outcomes)],
+    test_type = ifelse(method == "pearson", "Pearson", "Spearman")
+  )
+
+# Display correlation table
+cat("OA Correlation Results (with FDR correction):\n\n")
+
+oa_correlations %>%
+  select(Predictor = predictor_label, 
+         Outcome = outcome_label, 
+         Test = test_type,
+         r, p_raw = p_value, p_fdr, n) %>%
+  mutate(
+    r = round(r, 3),
+    p_raw = format(p_raw, scientific = FALSE, digits = 4),
+    p_fdr = format(p_fdr, scientific = FALSE, digits = 4),
+    sig_raw = case_when(
+      as.numeric(p_raw) < 0.001 ~ "***",
+      as.numeric(p_raw) < 0.01 ~ "**",
+      as.numeric(p_raw) < 0.05 ~ "*",
+      TRUE ~ ""
+    ),
+    sig_fdr = case_when(
+      as.numeric(p_fdr) < 0.001 ~ "***",
+      as.numeric(p_fdr) < 0.01 ~ "**",
+      as.numeric(p_fdr) < 0.05 ~ "*",
+      TRUE ~ ""
+    )
+  ) %>%
+  kable(caption = "OA Group: Correlations with Raw and FDR-Corrected P-values") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed")) %>%
+  scroll_box(height = "600px")
+
+# Count significant correlations
+oa_sig_summary <- oa_correlations %>%
+  summarise(
+    total = n(),
+    raw_p_05 = sum(p_value < 0.05, na.rm = TRUE),
+    raw_p_01 = sum(p_value < 0.01, na.rm = TRUE),
+    raw_p_001 = sum(p_value < 0.001, na.rm = TRUE),
+    fdr_p_05 = sum(p_fdr < 0.05, na.rm = TRUE),
+    fdr_p_01 = sum(p_fdr < 0.01, na.rm = TRUE),
+    fdr_p_001 = sum(p_fdr < 0.001, na.rm = TRUE)
+  )
+
+cat("\n\nOA Significant Correlations (Raw p-values):\n")
+cat("p < 0.05:", oa_sig_summary$raw_p_05, "out of", oa_sig_summary$total, "\n")
+cat("p < 0.01:", oa_sig_summary$raw_p_01, "out of", oa_sig_summary$total, "\n")
+cat("p < 0.001:", oa_sig_summary$raw_p_001, "out of", oa_sig_summary$total, "\n")
+
+cat("\n\nOA Significant Correlations (FDR-corrected):\n")
+cat("p < 0.05:", oa_sig_summary$fdr_p_05, "out of", oa_sig_summary$total, "\n")
+cat("p < 0.01:", oa_sig_summary$fdr_p_01, "out of", oa_sig_summary$total, "\n")
+cat("p < 0.001:", oa_sig_summary$fdr_p_001, "out of", oa_sig_summary$total, "\n")
+```
+
+## OA Correlation Heatmap (FDR-corrected)
+
+```{r oa-heatmap, fig.width=10, fig.height=8}
+# Create correlation matrix for heatmap
+oa_corr_matrix <- oa_correlations %>%
+  select(predictor_label, outcome_label, r) %>%
+  pivot_wider(names_from = outcome_label, values_from = r) %>%
+  column_to_rownames("predictor_label") %>%
+  as.matrix()
+
+oa_pval_matrix <- oa_correlations %>%
+  select(predictor_label, outcome_label, p_fdr) %>%
+  pivot_wider(names_from = outcome_label, values_from = p_fdr) %>%
+  column_to_rownames("predictor_label") %>%
+  as.matrix()
+
+# Create significance annotations (using FDR-corrected p-values)
+oa_sig_text <- matrix("", nrow = nrow(oa_pval_matrix), ncol = ncol(oa_pval_matrix))
+oa_sig_text[oa_pval_matrix < 0.001] <- "***"
+oa_sig_text[oa_pval_matrix >= 0.001 & oa_pval_matrix < 0.01] <- "**"
+oa_sig_text[oa_pval_matrix >= 0.01 & oa_pval_matrix < 0.05] <- "*"
+
+# Prepare data for ggplot
+oa_corr_long <- melt(oa_corr_matrix, value.name = "correlation")
+oa_sig_long <- melt(oa_sig_text, value.name = "sig")
+
+# Convert factors to character
+oa_corr_long <- oa_corr_long %>%
+  mutate(Var1 = as.character(Var1), Var2 = as.character(Var2))
+oa_sig_long <- oa_sig_long %>%
+  mutate(Var1 = as.character(Var1), Var2 = as.character(Var2))
+
+plot_data <- oa_corr_long %>%
+  left_join(oa_sig_long, by = c("Var1", "Var2"))
+
+# Create heatmap
+ggplot(plot_data, aes(x = Var2, y = Var1, fill = correlation)) +
+  geom_tile(color = "white", size = 1) +
+  geom_text(aes(label = sig), size = 6, vjust = 0.7, fontface = "bold") +
+  scale_fill_gradient2(
+    low = "blue", mid = "white", high = "red", 
+    midpoint = 0, limit = c(-1, 1), na.value = "grey90",
+    name = "Correlation\nCoefficient"
+  ) +
+  theme_minimal(base_size = 13) +
+  labs(
+    title = "OA Group: Correlation Heatmap (FDR-corrected)",
+    subtitle = "Predictors × Navigation Outcomes (Pearson/Spearman as appropriate)\n* p < 0.05, ** p < 0.01, *** p < 0.001 (FDR-corrected)",
+    x = "Navigation Outcomes", 
+    y = "Predictors"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12, face = "bold"),
+    axis.text.y = element_text(size = 11),
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 10),
+    legend.position = "right"
+  )
+```
+
+# Summary Comparison
+
+```{r summary-comparison}
+cat("=== SUMMARY: YA vs OA CORRELATIONS (FDR-corrected) ===\n\n")
+
+# Combine results for comparison
+combined_summary <- bind_rows(
+  ya_sig_summary %>% mutate(Group = "YA"),
+  oa_sig_summary %>% mutate(Group = "OA")
+) %>%
+  select(Group, total, 
+         raw_p_05, raw_p_01, raw_p_001,
+         fdr_p_05, fdr_p_01, fdr_p_001)
+
+cat("Significant Correlations by Group:\n")
+print(combined_summary)
+
+# Identify strongest correlations that survive FDR correction
+cat("\n\nStrongest FDR-Significant Positive Correlations:\n\n")
+
+cat("YA Group:\n")
+ya_correlations %>%
+  filter(p_fdr < 0.05) %>%
+  arrange(desc(r)) %>%
+  head(5) %>%
+  select(Predictor = predictor_label, Outcome = outcome_label, Test = test_type, r, p_fdr, n) %>%
+  mutate(r = round(r, 3), p_fdr = round(p_fdr, 4)) %>%
+  kable() %>%
+  kable_styling()
+
+cat("\n\nOA Group:\n")
+oa_correlations %>%
+  filter(p_fdr < 0.05) %>%
+  arrange(desc(r)) %>%
+  head(5) %>%
+  select(Predictor = predictor_label, Outcome = outcome_label, Test = test_type, r, p_fdr, n) %>%
+  mutate(r = round(r, 3), p_fdr = round(p_fdr, 4)) %>%
+  kable() %>%
+  kable_styling()
+
+cat("\n\nStrongest FDR-Significant Negative Correlations:\n\n")
+
+cat("YA Group:\n")
+ya_correlations %>%
+  filter(p_fdr < 0.05) %>%
+  arrange(r) %>%
+  head(5) %>%
+  select(Predictor = predictor_label, Outcome = outcome_label, Test = test_type, r, p_fdr, n) %>%
+  mutate(r = round(r, 3), p_fdr = round(p_fdr, 4)) %>%
+  kable() %>%
+  kable_styling()
+
+cat("\n\nOA Group:\n")
+oa_correlations %>%
+  filter(p_fdr < 0.05) %>%
+  arrange(r) %>%
+  head(5) %>%
+  select(Predictor = predictor_label, Outcome = outcome_label, Test = test_type, r, p_fdr, n) %>%
+  mutate(r = round(r, 3), p_fdr = round(p_fdr, 4)) %>%
+  kable() %>%
+  kable_styling()
+```
+
+# Session Information
+
+```{r session-info}
+sessionInfo()
+```

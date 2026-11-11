@@ -1,0 +1,298 @@
+---
+title: "NARA Cohorts Average Plots Code - Optimized"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r global-options, include=FALSE}
+source(file.path(Sys.getenv("NAVCITY_CODE"), "setup.R"), local = TRUE)   # data paths, sample filter, fixes
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+```{r loading-libraries, include=FALSE}
+# Load required libraries for data analysis and visualization
+library(tidyverse)    # Data manipulation and ggplot2
+library(ggdist)       # Statistical distributions for ggplot2
+# library(gghalves)   # FIX: no longer needed (half-point layer replaced); does not work with ggplot2 4
+library(gridExtra)    # Arranging multiple plots
+library(scales)       # Scale formatting
+```
+
+```{r setup-paths, include=FALSE}
+# Define file paths - MODIFY THESE FOR YOUR SYSTEM
+data_path <- paper_data_path
+output_path <- file.path(Sys.getenv("ANALYSIS_ROOT"), "output", "figures")
+dir.create(output_path, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r load-and-process-data, include=FALSE}
+# Function to load and standardize data (no column renaming needed)
+load_data <- function(file_path, age_group, has_target = FALSE) {
+  # Read CSV file
+  data <- read.csv(file_path)
+  
+  # Add age group column and remove index
+  data <- data %>%
+    select(-1) %>%  # Remove first column (index)
+    mutate(
+      Age = age_group,
+      Block_Num = as.factor(Block_Num)
+    )
+  
+  # Set target ordering only if this dataset has Target_Name column
+  if (has_target) {
+    desired_order <- c("Automobile shop", "Police station ", "Fire Station", 
+                      "Bank", "Pawn Shop", "Pizzeria", "Quattroki Restaurant", 
+                      "High School")
+    data$Target_Name <- factor(data$Target_Name, levels = desired_order)
+  }
+  
+  return(data)
+}
+
+# Load all datasets
+ya_data <- load_data(file.path(navcity_path, "ya_averaged_results.csv"), "YA")
+oa_data <- load_data(file.path(navcity_path, "oa_averaged_results.csv"), "OA")
+ya_nav_data <- load_data(file.path(navcity_path, "ya_merged_results.csv"), "YA", has_target = TRUE)
+oa_nav_data <- load_data(file.path(navcity_path, "oa_merged_results.csv"), "OA", has_target = TRUE)
+
+# Load non-navigation data
+# FIX: Group 0/1 -> "YA"/"OA" and Age (years) added; see setup.R
+non_nav_data <- label_paper_groups(read.csv(file.path(paper_data_path, "non_nav_data.csv"))) %>%
+  select(-Age)  # Remove Age column to avoid conflicts
+
+# Combine averaged data
+all_avg_data <- bind_rows(ya_data, oa_data) %>%
+  mutate(Age = factor(Age, levels = c("YA", "OA")))
+
+print(paste("Loaded averaged data for", nrow(all_avg_data), "participant-blocks"))
+print(paste("Loaded non-navigation data for", nrow(non_nav_data), "participants"))
+```
+
+```{r calculate-means-and-cohorts, include=FALSE}
+# Calculate means across all three blocks for each participant
+# This replaces the inefficient for loop with vectorized operations
+
+mean_data <- all_avg_data %>%
+  group_by(Participant, Age) %>%
+  summarise(
+    Total_Time = mean(Total_Time, na.rm = TRUE),
+    Orientation_Time = mean(Orientation_Time, na.rm = TRUE),
+    Navigation_Time = mean(Navigation_Time, na.rm = TRUE),
+    Distance = mean(Distance, na.rm = TRUE),
+    Speed = mean(Speed, na.rm = TRUE),
+    Mean_Dwell = mean(Mean_Dwell, na.rm = TRUE),
+    Teleportations = mean(Teleportations, na.rm = TRUE),
+    Mean_Teleport_Distance = mean(Mean_Teleport_Distance, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  mutate(Age = factor(Age, levels = c("YA", "OA")))
+
+# Merge with non-navigation data and create cohort labels
+df_merge <- mean_data %>%
+  left_join(non_nav_data, by = "Participant") %>%
+  filter(!is.na(NARA))  # Remove participants without NARA scores
+
+# Create final dataset with three cohorts
+df_final <- df_merge %>%
+  mutate(
+    Cohort = case_when(
+      Age == "YA" ~ "ya",
+      Age == "OA" & NARA >= 3.5 ~ "oa_high",
+      Age == "OA" & NARA < 3.5 ~ "oa_low",
+      TRUE ~ NA_character_
+    ),
+    Cohort = factor(Cohort, levels = c("ya", "oa_high", "oa_low"))
+  )
+
+# Create separate datasets for analyses
+ya_data_final <- filter(df_final, Cohort == "ya")
+oa_high <- filter(df_final, Cohort == "oa_high")
+oa_low <- filter(df_final, Cohort == "oa_low")
+
+print("Cohort distribution:")
+print(table(df_final$Cohort, useNA = "ifany"))
+print(paste("Total participants with NARA scores:", nrow(df_final)))
+```
+
+```{r plotting-functions, include=FALSE}
+# Function to create standardized three-group raincloud plots
+create_cohort_raincloud <- function(data, y_var, y_label, y_limits = NULL, 
+                                   colors = c('ya' = '#FF9FAF', 'oa_low' = '#8A9AFF', 'oa_high' = '#325AF5')) {
+  
+  p <- ggplot(data, aes(x = Cohort, y = .data[[y_var]], fill = Cohort, color = Cohort)) +
+    
+    # Set colors
+    scale_fill_manual(values = colors) +
+    scale_color_manual(values = colors) +
+    
+    # Format y-axis
+    #scale_y_continuous(limits = c(0, 8), breaks = seq(0, 8, by = 1)) +
+    scale_x_discrete(labels = c("YA", expression(OA[High]), expression(OA[Low]))) +
+    
+    # Set y-axis limits if provided
+    {if (!is.null(y_limits)) ylim(y_limits)} +
+    
+    # Labels and theme
+    labs(y = y_label, x = "", color = "Cohort") +
+    theme_classic() +
+    theme(
+      axis.line = element_line(linewidth = 0.5, colour = "#242526"),
+      axis.ticks = element_line(linewidth = 0.2, colour = "#242526"),
+      plot.title = element_text(hjust = 0.5),
+      legend.position = "none",
+      axis.text.x = element_text(size = 20),
+      axis.text.y = element_text(size = 20),
+      axis.title.y = element_text(size = 20)
+    ) +
+    
+    # Add half-violin (density plot)
+    stat_halfeye(
+      adjust = 0.5,           # Bandwidth adjustment
+      justification = -0.2,   # Move to the right
+      .width = 0,             # Remove interval
+      point_colour = NA,      # No point
+      scale = 0.5             # Scale the violin
+    ) +
+    
+    # Add boxplot
+    geom_boxplot(
+      width = 0.12,
+      outlier.color = NA,     # Remove outliers (shown as points instead)
+      alpha = 0.5
+    ) +
+    
+    # Add jittered points
+    geom_point(   # FIX: was the gghalves half-point layer (left side), which fails with ggplot2 4
+      alpha = 0.3,
+      position = position_jitter_left(width = 0.12)
+    )
+  
+  return(p)
+}
+
+# Function to save plots as SVG
+save_plot <- function(plot, filename, width = 5, height = 5) {
+  ggsave(
+    filename = file.path(output_path, paste0(filename, ".svg")),
+    plot = plot,
+    width = width,
+    height = height
+  )
+  cat("Saved:", filename, "\n")
+}
+
+# Function to save plots as PNG
+save_plot <- function(plot, filename, width = 5, height = 5) {
+  ggsave(
+    filename = file.path(output_path, paste0(filename, ".png")),
+    plot = plot,
+    width = width,
+    height = height
+  )
+  cat("Saved:", filename, "\n")
+}
+```
+
+```{r create-all-plots, include=FALSE}
+# Define plot specifications in a data frame for easy management
+plot_specs <- tribble(
+  ~var_name,                ~label,                                      ~y_limits,
+  "Total_Time",             "Mean Total Time (s)",                      c(0, 168),
+  "Orientation_Time",       "Mean Orientation Time (s)",                c(0, 30),
+  "Navigation_Time",        "Mean Navigation Time (s)",                 c(0, 168),
+  "Distance",               "Mean Distance Traveled (m)",               NULL,
+  "Speed",                  "Mean Speed (m/s)",                         c(0, 30),
+  "Mean_Dwell",             "Mean Dwell Duration (s)",                      c(0, 3),
+  "Teleportations",         "Mean Teleportations (count)",              c(0, 150),
+  "Mean_Teleport_Distance", "Mean Teleport Distance (m)",               NULL
+)
+
+# Create all plots using functional programming
+plots <- map2(plot_specs$var_name, plot_specs$label, function(var, label) {
+  spec <- filter(plot_specs, var_name == var)
+  create_cohort_raincloud(
+    data = df_final,
+    y_var = var,
+    y_label = label,
+    y_limits = spec$y_limits[[1]]
+  )
+})
+
+# Name the plots for easy reference
+names(plots) <- paste0("p_", c("ct", "orict", "navct", "dt", "speed", "dwell", "teleport", "teleport_dt"))
+
+# Extract individual plots
+p_ct <- plots$p_ct
+p_orict <- plots$p_orict  
+p_navct <- plots$p_navct
+p_dt <- plots$p_dt
+p_speed <- plots$p_speed
+p_dwell <- plots$p_dwell
+p_teleport <- plots$p_teleport
+p_teleport_dt <- plots$p_teleport_dt
+
+print("Created all cohort plots")
+```
+
+```{r save-individual-plots, include=FALSE}
+# Save all individual plots efficiently
+plot_names <- c("6_cohorts_average_ct", "6_cohorts_average_orict", "6_cohorts_average_navct",
+                "6_cohorts_average_dt", "6_cohorts_average_speed", "6_cohorts_average_dwell",
+                "6_cohorts_average_teleport", "6_cohorts_average_teleport_dt")
+
+walk2(plots, plot_names, ~ save_plot(.x, .y))
+```
+
+```{r create-composite-figure, fig.height=20, fig.width=20, fig.align="center"}
+# Create composite figure with all plots arranged in a grid
+# 4 columns, 2 rows layout with 8 plots
+composite_plot <- grid.arrange(
+  p_speed, p_ct, p_orict, p_navct,               # Row 1
+  p_dt, p_dwell, p_teleport, p_teleport_dt,    # Row 2
+  ncol = 4, 
+  nrow = 2
+)
+
+# Save composite figure
+save_plot(composite_plot, "6_cohorts_average_composite", width = 20, height = 20)
+```
+
+```{r summary-statistics, include=FALSE}
+# Generate summary statistics for each measure by cohort
+summary_stats <- df_final %>%
+  pivot_longer(
+    cols = c(Total_Time, Orientation_Time, Navigation_Time, Distance, 
+             Speed, Mean_Dwell, Teleportations, Mean_Teleport_Distance),
+    names_to = "Measure",
+    values_to = "Value"
+  ) %>%
+  group_by(Cohort, Measure) %>%
+  summarise(
+    n = n(),
+    mean = round(mean(Value, na.rm = TRUE), 2),
+    sd = round(sd(Value, na.rm = TRUE), 2),
+    median = round(median(Value, na.rm = TRUE), 2),
+    min = round(min(Value, na.rm = TRUE), 2),
+    max = round(max(Value, na.rm = TRUE), 2),
+    .groups = 'drop'
+  )
+
+print("Summary statistics by cohort and measure:")
+print(summary_stats)
+
+# NARA score information by cohort
+nara_summary <- df_final %>%
+  group_by(Cohort) %>%
+  summarise(
+    n = n(),
+    mean_nara = round(mean(NARA, na.rm = TRUE), 2),
+    sd_nara = round(sd(NARA, na.rm = TRUE), 2),
+    min_nara = round(min(NARA, na.rm = TRUE), 2),
+    max_nara = round(max(NARA, na.rm = TRUE), 2),
+    .groups = 'drop'
+  )
+
+print("NARA scores by cohort:")
+print(nara_summary)
+```

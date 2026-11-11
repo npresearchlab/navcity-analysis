@@ -1,0 +1,269 @@
+---
+title: "Demographic Analysis of Study Participants"
+author: "Yasmine Bassil"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    theme: flatly
+  pdf_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+source(file.path(Sys.getenv("NAVCITY_CODE"), "setup.R"), local = TRUE)   # data paths, sample filter, fixes
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Load Required Libraries
+
+```{r load-libraries}
+library(dplyr)
+library(readr)
+library(knitr)
+library(ggplot2)
+library(tidyr)
+```
+
+## Load and Explore Data
+
+```{r load-data}
+# Load the non-navigation data
+# FIX: Group 0/1 -> "YA"/"OA" and Age (years) added; see setup.R
+# FIX: Group 0/1 -> "YA"/"OA" and Age (years) added; see setup.R
+non_nav_data <- label_paper_groups(label_paper_groups(read_csv(file.path(paper_data_path, "demographic_data.csv"))))
+```
+
+## Basic Group Information
+
+```{r basic-group-info}
+# Check the unique groups in the dataset
+cat("Unique groups in the dataset:\n")
+kable(table(non_nav_data$Group), col.names = c("Group", "Count"), 
+      caption = "Number of Participants by Group")
+
+# Check gender distribution
+cat("\nGender distribution in the dataset:\n")
+kable(table(non_nav_data$Gender), col.names = c("Gender", "Count"), 
+      caption = "Number of Participants by Gender (M = Man, W = Woman)")
+```
+
+## Gender Distribution by Group
+
+```{r gender-by-group}
+# Cross-tabulation of Gender by Group
+gender_group_table <- table(non_nav_data$Gender, non_nav_data$Group)
+kable(gender_group_table, caption = "Gender Distribution by Group")
+
+# Add percentages
+gender_group_prop <- prop.table(gender_group_table, margin = 2) * 100
+kable(round(gender_group_prop, 1), caption = "Gender Distribution by Group (% within group)")
+
+# Summary statistics for gender distribution
+gender_summary <- non_nav_data %>%
+  group_by(Group, Gender) %>%
+  summarise(n = n(), .groups = 'drop') %>%
+  group_by(Group) %>%
+  mutate(
+    total = sum(n),
+    percentage = round(n/total * 100, 1),
+    summary = paste0(n, " (", percentage, "%)")
+  ) %>%
+  select(Group, Gender, summary) %>%
+  pivot_wider(names_from = Gender, values_from = summary, values_fill = "0 (0.0%)")
+
+kable(gender_summary, caption = "Gender Summary by Group: N (%)")
+```
+
+## Statistical Test for Gender Distribution
+
+```{r gender-test}
+# Chi-square test to see if gender distribution differs between groups
+gender_chi_test <- chisq.test(table(non_nav_data$Gender, non_nav_data$Group))
+print(gender_chi_test)
+
+# Fisher's exact test (alternative for small sample sizes)
+gender_fisher_test <- fisher.test(table(non_nav_data$Gender, non_nav_data$Group))
+print(gender_fisher_test)
+```
+
+## Age Statistics by Group
+
+```{r age-stats}
+# Calculate age statistics by group
+age_stats <- non_nav_data %>%
+  group_by(Group) %>%
+  summarise(
+    n = n(),
+    mean_age = round(mean(Age, na.rm = TRUE), 2),
+    median_age = round(median(Age, na.rm = TRUE), 2),
+    sd_age = round(sd(Age, na.rm = TRUE), 2),
+    min_age = min(Age, na.rm = TRUE),
+    max_age = max(Age, na.rm = TRUE),
+    age_range = paste(min_age, "-", max_age),
+    .groups = 'drop'
+  )
+
+kable(age_stats, caption = "Age Statistics by Group")
+```
+
+## Age Comparisons by Group and Gender
+
+```{r age-by-gender}
+# Age statistics by group and gender
+age_gender_stats <- non_nav_data %>%
+  group_by(Group, Gender) %>%
+  summarise(
+    n = n(),
+    mean_age = round(mean(Age, na.rm = TRUE), 1),
+    sd_age = round(sd(Age, na.rm = TRUE), 1),
+    median_age = round(median(Age, na.rm = TRUE), 1),
+    min_age = min(Age, na.rm = TRUE),
+    max_age = max(Age, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    `Mean ± SD` = paste0(mean_age, " ± ", sd_age),
+    `Range` = paste0(min_age, "-", max_age)
+  ) %>%
+  select(Group, Gender, n, `Mean ± SD`, `Range`)
+
+kable(age_gender_stats, caption = "Age Statistics by Group and Gender")
+
+# Test for age differences between genders within each group
+cat("Age differences between genders within YA group:\n")
+ya_age_test <- t.test(Age ~ Gender, data = filter(non_nav_data, Group == "YA"))
+print(ya_age_test)
+
+cat("\nAge differences between genders within OA group:\n")
+oa_age_test <- t.test(Age ~ Gender, data = filter(non_nav_data, Group == "OA"))
+print(oa_age_test)
+```
+
+## Comprehensive Demographic Summary
+
+```{r comprehensive-demographics}
+# Create a comprehensive demographic table
+demographic_table <- non_nav_data %>%
+  group_by(Group) %>%
+  summarise(
+    N = n(),
+    `Mean Age ± SD` = paste0(round(mean(Age, na.rm = TRUE), 1), " ± ", round(sd(Age, na.rm = TRUE), 1)),
+    `Age Range` = paste(min(Age, na.rm = TRUE), "-", max(Age, na.rm = TRUE)),
+    `Men: N (%)` = paste0(sum(Gender == "M"), " (", round(sum(Gender == "M")/n() * 100, 1), "%)"),
+    `Women: N (%)` = paste0(sum(Gender == "W"), " (", round(sum(Gender == "W")/n() * 100, 1), "%)"),
+    .groups = 'drop'
+  )
+
+kable(demographic_table, caption = "Comprehensive Demographic Summary by Group")
+
+# Overall sample characteristics
+total_summary <- non_nav_data %>%
+  summarise(
+    `Total N` = n(),
+    `Mean Age ± SD` = paste0(round(mean(Age, na.rm = TRUE), 1), " ± ", round(sd(Age, na.rm = TRUE), 1)),
+    `Age Range` = paste(min(Age, na.rm = TRUE), "-", max(Age, na.rm = TRUE)),
+    `Men: N (%)` = paste0(sum(Gender == "M"), " (", round(sum(Gender == "M")/n() * 100, 1), "%)"),
+    `Women: N (%)` = paste0(sum(Gender == "W"), " (", round(sum(Gender == "W")/n() * 100, 1), "%)")
+  ) %>%
+  mutate(Group = "Total Sample") %>%
+  select(Group, everything())
+
+kable(total_summary, caption = "Overall Sample Characteristics")
+```
+
+## Detailed Age Distribution
+
+```{r detailed-age}
+# Create a more detailed breakdown
+age_distribution <- non_nav_data %>%
+  group_by(Group) %>%
+  summarise(
+    `N` = n(),
+    `Mean ± SD` = paste0(round(mean(Age, na.rm = TRUE), 1), " ± ", round(sd(Age, na.rm = TRUE), 1)),
+    `Median (IQR)` = paste0(round(median(Age, na.rm = TRUE), 1), 
+                            " (", round(quantile(Age, 0.25, na.rm = TRUE), 1), 
+                            "-", round(quantile(Age, 0.75, na.rm = TRUE), 1), ")"),
+    `Range` = paste(min(Age, na.rm = TRUE), "-", max(Age, na.rm = TRUE)),
+    .groups = 'drop'
+  )
+
+kable(age_distribution, caption = "Detailed Age Statistics")
+```
+
+## Age and Gender Distribution Visualizations
+
+```{r age-gender-plots, fig.width=12, fig.height=8}
+# Create comprehensive visualization
+p1 <- ggplot(non_nav_data, aes(x = Age, fill = Gender)) +
+  geom_histogram(alpha = 0.7, position = 'identity', bins = 10) +
+  facet_wrap(~Group) +
+  labs(title = 'Age Distribution by Group and Gender',
+       x = 'Age (years)',
+       y = 'Count') +
+  theme_minimal() +
+  scale_fill_manual(values = c("M" = "#4CAF50", "W" = "#FF9800"))
+
+p2 <- ggplot(non_nav_data, aes(x = Group, y = Age, fill = Gender)) +
+  geom_boxplot(alpha = 0.7, position = position_dodge(0.8)) +
+  geom_point(position = position_jitterdodge(dodge.width = 0.8), alpha = 0.6) +
+  labs(title = 'Age Distribution by Group and Gender',
+       x = 'Group',
+       y = 'Age (years)') +
+  theme_minimal() +
+  scale_fill_manual(values = c("M" = "#4CAF50", "W" = "#FF9800"))
+
+print(p1)
+print(p2)
+```
+
+```{r gender-distribution-plot, fig.width=10, fig.height=6}
+# Gender distribution visualization
+gender_counts <- non_nav_data %>%
+  count(Group, Gender) %>%
+  group_by(Group) %>%
+  mutate(percentage = n/sum(n) * 100)
+
+p3 <- ggplot(gender_counts, aes(x = Group, y = n, fill = Gender)) +
+  geom_col(position = "dodge", alpha = 0.8) +
+  geom_text(aes(label = paste0(n, "\n(", round(percentage, 1), "%)")), 
+            position = position_dodge(width = 0.9), vjust = -0.5) +
+  labs(title = 'Gender Distribution by Group',
+       x = 'Group',
+       y = 'Count',
+       fill = 'Gender') +
+  theme_minimal() +
+  scale_fill_manual(values = c("M" = "#4CAF50", "W" = "#FF9800")) +
+  ylim(0, max(gender_counts$n) * 1.2)
+
+print(p3)
+```
+
+## Statistical Test for Age Differences
+
+```{r age-test}
+# Perform t-test to compare ages between groups
+t_test_result <- t.test(Age ~ Group, data = non_nav_data)
+print(t_test_result)
+
+# Also perform Wilcoxon test (non-parametric alternative)
+wilcox_test_result <- wilcox.test(Age ~ Group, data = non_nav_data)
+print(wilcox_test_result)
+```
+
+## Notes
+
+**Gender Analysis Note:** Based on the available data, no clear gender/sex variable was identified in the dataset. If gender information is encoded in participant IDs or in another variable, please provide more information about how it's coded. The analysis above focuses on the available demographic information (age and group).
+
+**Statistical Considerations:** 
+- For demographic reporting, both mean±SD and median(IQR) are provided
+- The choice between parametric (t-test) and non-parametric (Wilcoxon) tests depends on the distribution of your data
+- Visual inspection of the histograms and box plots can help determine normality
+
+## Session Information
+
+```{r session-info}
+sessionInfo()
+```
