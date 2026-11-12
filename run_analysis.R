@@ -16,7 +16,7 @@
 args <- commandArgs(trailingOnly = FALSE)
 code_root <- dirname(normalizePath(sub("^--file=", "", args[grep("^--file=", args)])))
 targs <- commandArgs(trailingOnly = TRUE)
-if (length(targs) < 1) stop("Usage: Rscript run_analysis.R <analysis folder> [figures|<stats folder>]")
+if (length(targs) < 1) stop("Usage: Rscript run_analysis.R <analysis folder> [figures|<stats folder>|<folder>/<file>.Rmd ...]")
 analysis_root <- normalizePath(targs[1], mustWork = TRUE)
 if (!file.exists(file.path(analysis_root, "sample.tsv"))) stop(analysis_root, " has no sample.tsv")
 only <- targs[-1]
@@ -38,7 +38,18 @@ plan <- list(
                    "4_three_grp_demographic_stats.Rmd", "5_oahigh_oalow_demographic_stats.Rmd",
                    "5_oahigh_oalow_demographic_stats_redo_SSQ.Rmd")
 )
-if (length(only)) plan <- plan[only]
+# Arguments: whole folders ("figures", "main_lmm") or single Rmds ("figures/1_average_plots.Rmd")
+if (length(only)) {
+  bad <- setdiff(sub("/.*", "", only), names(plan))
+  if (length(bad)) stop("Unknown folder: ", paste(bad, collapse = ", "))
+  plan <- lapply(setNames(nm = unique(sub("/.*", "", only))), function(part) {
+    picks <- sub("^[^/]*/?", "", only[sub("/.*", "", only) == part])
+    if (any(picks == "")) return(plan[[part]])
+    miss <- setdiff(picks, plan[[part]])
+    if (length(miss)) stop("Not in ", part, ": ", paste(miss, collapse = ", "))
+    plan[[part]][plan[[part]] %in% picks]            # keep the folder's order
+  })
+}
 
 log <- data.frame()
 for (part in names(plan)) {

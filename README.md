@@ -231,6 +231,7 @@ cd <nav_study>/04_code/navcity_analysis
 Rscript run_analysis.R ../../05_analyses/navcity_60subs              # everything (about 10 minutes)
 Rscript run_analysis.R ../../05_analyses/navcity_60subs figures      # only the figures
 Rscript run_analysis.R ../../05_analyses/navcity_60subs main_lmm     # only one 3_stats folder
+Rscript run_analysis.R ../../05_analyses/navcity_60subs figures/1_average_plots.Rmd main_lmm   # single Rmds and folders
 ```
 
 The argument is an analysis folder in `05_analyses/`. It must contain `sample.tsv` (columns
