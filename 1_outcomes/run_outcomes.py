@@ -8,6 +8,9 @@ NavCity outcomes: rawdata -> per-target and per-block tables.
 Reads   03_data/rawdata/sub-*/ses-beh/navcity/*_task-navcity_block-{1,2,3}.csv
         02_participants/participants.tsv        (age group, inclusion)
 Writes  03_data/derivatives/navcity/            (see README for every file)
+        included participants (incl_navcity_nara == 1) at the top level, excluded
+        participants in excluded/ (built from participants.tsv on every run; the
+        study's default for derived outputs, 01_methods/analysis_decisions.md)
 
 Paths are found from this file's location inside nav_study; use
 --study-root or --output-dir to point elsewhere.
@@ -17,6 +20,7 @@ import argparse
 import glob
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -99,22 +103,35 @@ def main():
         print(f'{pid}: done')
 
     by_target = pd.concat(rows, ignore_index=True)
+    info = participants.reindex(by_target['Participant'])
+    incl = info['incl_navcity_nara'].eq('1').values
+    included = set(by_target['Participant'][incl])
+    excl_dir = out / 'excluded'
 
-    # Per participant, per block (same files as the original pipeline wrote)
+    # Per participant, per block (same files as the original pipeline wrote).
+    # Included -> per_participant/, excluded -> excluded/per_participant/; a person whose
+    # inclusion changed is removed from the other folder.
     for (pid, b), df in by_target.groupby(['Participant', 'Block_Num']):
-        p = out / 'per_participant' / pid / f'b{b}_results.csv'
+        home, other = (out, excl_dir) if pid in included else (excl_dir, out)
+        p = home / 'per_participant' / pid / f'b{b}_results.csv'
         p.parent.mkdir(parents=True, exist_ok=True)
         df.drop(columns=['Participant', 'Block_Num']).to_csv(p, index=False, na_rep='NA')
+        stale = other / 'per_participant' / pid
+        if stale.exists():
+            try:
+                shutil.rmtree(stale)
+                print(f'Moved {pid} out of {stale.parent.relative_to(out.parent)}')
+            except OSError as e:
+                print(f'WARNING: could not remove {stale} ({e}); delete it by hand')
 
-    # Everyone with all 3 blocks, labelled; no inclusion filter
-    info = participants.reindex(by_target['Participant'])
-    everyone = by_target.copy()
-    everyone.insert(1, 'Age_Group', info['age_group'].values)
-    everyone.insert(2, 'incl_navcity_nara', info['incl_navcity_nara'].values)
-    write_csv(everyone, out / 'all_merged_results.csv', index_col=False)
+    # One table per set, labelled with age group and inclusion status
+    labelled = by_target.copy()
+    labelled.insert(1, 'Age_Group', info['age_group'].values)
+    labelled.insert(2, 'incl_navcity_nara', info['incl_navcity_nara'].values)
+    write_csv(labelled[incl], out / 'all_merged_results.csv', index_col=False)        # YA + OA
+    write_csv(labelled[~incl], excl_dir / 'excluded_merged_results.csv', index_col=False)
 
     # Analysis set: incl_navcity_nara == 1, split by age group
-    incl = info['incl_navcity_nara'].eq('1').values
     for age, (prefix, _) in AGE_GROUPS.items():
         sel = by_target[incl & (info['age_group'] == age).values]
         write_csv(sel, out / f'{prefix}_merged_results.csv')
@@ -137,8 +154,8 @@ def main():
         print('Skipped (not all 3 blocks in rawdata):')
         for pid, why in skipped:
             print(f'  {pid}: {why}')
-    print(f'In all_merged_results.csv but not in the ya_/oa_ files '
-          f'(incl_navcity_nara != 1): {", ".join(not_in_set) or "none"}')
+    print(f'Excluded (incl_navcity_nara != 1), written to excluded/: '
+          f'{", ".join(not_in_set) or "none"}')
 
     if args.plots:
         from visualization import extract_target_trajectories, plot_target_maps
