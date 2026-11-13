@@ -125,8 +125,8 @@ The code is here (one copy, in git); each folder in `05_analyses/` only holds wh
    - participants with `incl_navcity_nara == 1` in `participants.tsv` → `all_merged_results.csv`
      and `per_participant/`, and, split by `age_group` (YA / OA), the `ya_` and `oa_` files plus
      their block means and block sums (`metrics.summarise_blocks`);
-   - everyone else with 3 blocks (excluded) → `excluded/excluded_merged_results.csv` and
-     `excluded/per_participant/`. This is the study's default for derived outputs
+   - everyone else with 3 blocks (excluded) → `_excluded/excluded_merged_results.csv` and
+     `_excluded/per_participant/`. This is the study's default for derived outputs
      (`01_methods/analysis_decisions.md`): the code rebuilds both sets from `participants.tsv`
      on every run, so never move files between them by hand.
 6. **List** any targets with missing (NA) positions in `targets_with_NA_positions.tsv`.
@@ -158,8 +158,8 @@ All in `03_data/derivatives/navcity/`, rewritten on every run.
 | `ya_summed_results.csv`, `oa_summed_results.csv` | participant × block: **sum** of the 8 targets (Total_Time, Orientation_Time, Navigation_Time, Distance, Teleportations only) | included YA / OA |
 | `all_merged_results.csv` | participant × block × target, with `Age_Group` and `incl_navcity_nara` columns | included YA and OA together |
 | `per_participant/<ID>/b{1,2,3}_results.csv` | target | included |
-| `excluded/excluded_merged_results.csv` | same as `all_merged_results.csv` | excluded participants with 3 blocks (`incl_navcity_nara` says why: excluded / unusable) |
-| `excluded/per_participant/<ID>/b{1,2,3}_results.csv` | target | excluded participants with 3 blocks |
+| `_excluded/excluded_merged_results.csv` | same as `all_merged_results.csv` | excluded participants with 3 blocks (`incl_navcity_nara` says why: excluded / unusable) |
+| `_excluded/per_participant/<ID>/b{1,2,3}_results.csv` | target | excluded participants with 3 blocks |
 | `targets_with_NA_positions.tsv` | target with NA positions: how many frames and seconds | |
 | `Target_Data/` (only with `--plots`) | position files per target and block, and map images | included participants |
 
@@ -221,7 +221,7 @@ which file to use) are other actions in the same file; see `02_participants/READ
 
 **Exclude a participant from analyses.** Do it in `02_participants/exclusions.tsv` (with the
 reason), not here, then rebuild `participants.tsv` and re-run `run_outcomes.py`: their outcomes
-move to `excluded/`. People with fewer than 3 blocks get no outcomes (listed at the end of the run).
+move to `_excluded/`. People with fewer than 3 blocks get no outcomes (listed at the end of the run).
 
 **Try a change without touching the real tables.** Use `--output-dir` to write somewhere else.
 

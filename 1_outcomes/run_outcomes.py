@@ -9,7 +9,7 @@ Reads   03_data/rawdata/sub-*/ses-beh/navcity/*_task-navcity_block-{1,2,3}.csv
         02_participants/participants.tsv        (age group, inclusion)
 Writes  03_data/derivatives/navcity/            (see README for every file)
         included participants (incl_navcity_nara == 1) at the top level, excluded
-        participants in excluded/ (built from participants.tsv on every run; the
+        participants in _excluded/ (built from participants.tsv on every run; the
         study's default for derived outputs, 01_methods/analysis_decisions.md)
 
 Paths are found from this file's location inside nav_study; use
@@ -106,10 +106,10 @@ def main():
     info = participants.reindex(by_target['Participant'])
     incl = info['incl_navcity_nara'].eq('1').values
     included = set(by_target['Participant'][incl])
-    excl_dir = out / 'excluded'
+    excl_dir = out / '_excluded'
 
     # Per participant, per block (same files as the original pipeline wrote).
-    # Included -> per_participant/, excluded -> excluded/per_participant/; a person whose
+    # Included -> per_participant/, excluded -> _excluded/per_participant/; a person whose
     # inclusion changed is removed from the other folder.
     for (pid, b), df in by_target.groupby(['Participant', 'Block_Num']):
         home, other = (out, excl_dir) if pid in included else (excl_dir, out)
@@ -154,7 +154,7 @@ def main():
         print('Skipped (not all 3 blocks in rawdata):')
         for pid, why in skipped:
             print(f'  {pid}: {why}')
-    print(f'Excluded (incl_navcity_nara != 1), written to excluded/: '
+    print(f'Excluded (incl_navcity_nara != 1), written to _excluded/: '
           f'{", ".join(not_in_set) or "none"}')
 
     if args.plots:
